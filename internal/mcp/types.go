@@ -89,6 +89,12 @@ type todoSearchItem struct {
 	Title       string `json:"title"`
 }
 
+type todoLinkItem struct {
+	LocalID  int64  `json:"localId"`
+	Title    string `json:"title"`
+	LinkType string `json:"linkType"`
+}
+
 type sprintItem struct {
 	ProjectSlug    string `json:"projectSlug"`
 	SprintID       int64  `json:"sprintId"`
@@ -123,6 +129,15 @@ type boardProjectItem struct {
 	Role        string `json:"role,omitempty"`
 }
 
+type workflowColumnItem struct {
+	Key      string `json:"key"`
+	Name     string `json:"name"`
+	Color    string `json:"color"`
+	Position int    `json:"position"`
+	IsDone   bool   `json:"isDone"`
+	System   bool   `json:"system"`
+}
+
 type boardColumnItem struct {
 	Key    string     `json:"key"`
 	Name   string     `json:"name"`
@@ -140,20 +155,20 @@ type projectMemberItem struct {
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
-// membersAddInput is the input for members.add and members.updateRole (projectSlug + userId + canonical role only).
+// membersAddInput is the input for members_add and members_updateRole (projectSlug + userId + canonical role only).
 type membersAddInput struct {
 	ProjectSlug string `json:"projectSlug"`
 	UserID      int64  `json:"userId"`
 	Role        string `json:"role"`
 }
 
-// membersRemoveInput is the input for members.remove (projectSlug + userId only).
+// membersRemoveInput is the input for members_remove (projectSlug + userId only).
 type membersRemoveInput struct {
 	ProjectSlug string `json:"projectSlug"`
 	UserID      int64  `json:"userId"`
 }
 
-// availableUserItem is the shape for members.listAvailable only (users not yet in the project).
+// availableUserItem is the shape for members_listAvailable only (users not yet in the project).
 // It intentionally omits fields the store does not load for that query (e.g. image).
 type availableUserItem struct {
 	UserID      int64     `json:"userId"`

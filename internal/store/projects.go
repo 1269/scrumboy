@@ -161,7 +161,9 @@ func (s *Store) GetProjectContextForRead(ctx context.Context, projectID int64, m
 func (s *Store) buildProjectContext(ctx context.Context, p Project, mode Mode) (ProjectContext, error) {
 	pc := ProjectContext{Project: p}
 
-	// Temporary boards bypass ownership checks
+	// Expiring boards (Temporary Boards and Anonymous Boards) are link-shareable and bypass
+	// ownership/role checks while they remain temporary. Durable Projects fall through to the
+	// owner/member authorization below.
 	if p.ExpiresAt != nil {
 		if err := rejectIfExpiredTemporaryProject(p); err != nil {
 			return ProjectContext{}, err
@@ -208,7 +210,7 @@ func (s *Store) getProjectForWrite(ctx context.Context, projectID int64, mode Mo
 		return Project{}, err
 	}
 
-	// Temporary boards bypass role checks
+	// Expiring boards (Temporary Boards and Anonymous Boards) bypass role checks while temporary
 	if p.ExpiresAt != nil {
 		return p, nil
 	}
@@ -236,16 +238,19 @@ func (s *Store) getProjectForWrite(ctx context.Context, projectID int64, mode Mo
 	return p, nil
 }
 
-// isAnonymousTemporaryBoard checks if a project is an anonymous temporary board.
-// Anonymous temp boards are identified by: expires_at IS NOT NULL AND creator_user_id IS NULL.
-// These boards are immutable at the project level - only todo-level operations are allowed.
+// isAnonymousTemporaryBoard reports whether a project is an Anonymous Board: an expiring board
+// with no recorded creator (expires_at IS NOT NULL AND creator_user_id IS NULL). Anonymous
+// Boards are created by unauthenticated board creation (always in Anonymous Mode, and in Full
+// Mode when signed out). They are immutable at the project level - only todo-level operations
+// are allowed - and they are never claimable.
 func isAnonymousTemporaryBoard(p Project) bool {
 	return p.ExpiresAt != nil && p.CreatorUserID == nil
 }
 
-// isTemporaryProject is true for any link-expiring board (expires_at set): unowned anonymous temps
-// and FULL-mode temporary boards with a creator. Durable projects have ExpiresAt == nil.
-// Use this for "link collaboration" write paths; use isAnonymousTemporaryBoard for unowned-only semantics.
+// isTemporaryProject reports whether a project is any expiring board (expires_at set): both
+// Anonymous Boards (no creator) and Full Mode Temporary Boards (with a creator). Durable
+// Projects have ExpiresAt == nil. Use this for "link collaboration" write paths; use
+// isAnonymousTemporaryBoard for the creator-less (unclaimable) subset.
 func isTemporaryProject(p Project) bool {
 	return p.ExpiresAt != nil
 }
@@ -606,57 +611,83 @@ func slugExistsTx(ctx context.Context, tx *sql.Tx, slug string) (bool, error) {
 	return exists, nil
 }
 
-func (s *Store) DeleteProject(ctx context.Context, projectID int64, userID int64) error {
+type DeletedProjectSnapshot struct {
+	ProjectID     int64
+	Name          string
+	MemberUserIDs []int64
+}
+
+func (s *Store) DeleteProject(ctx context.Context, projectID int64, userID int64) (DeletedProjectSnapshot, error) {
 	// Load project to check if it's an anonymous temp board
 	p, err := s.getProject(ctx, projectID)
 	if err != nil {
-		return err
+		return DeletedProjectSnapshot{}, err
 	}
 
 	// CRITICAL: Anonymous temporary boards are immutable at the project level.
 	// They can only be deleted by expiration, not by user action.
 	// Return ErrNotFound to avoid leaking existence of anonymous temp boards.
 	if isAnonymousTemporaryBoard(p) {
-		return ErrNotFound
+		return DeletedProjectSnapshot{}, ErrNotFound
 	}
 
 	if err := s.CheckProjectRole(ctx, projectID, userID, RoleMaintainer); err != nil {
-		return err
+		return DeletedProjectSnapshot{}, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
-		return fmt.Errorf("begin delete project: %w", err)
+		return DeletedProjectSnapshot{}, fmt.Errorf("begin delete project: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	var name string
 	if err := tx.QueryRowContext(ctx, `SELECT name FROM projects WHERE id = ?`, projectID).Scan(&name); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
+			return DeletedProjectSnapshot{}, ErrNotFound
 		}
-		return fmt.Errorf("get project name: %w", err)
+		return DeletedProjectSnapshot{}, fmt.Errorf("get project name: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT user_id FROM project_members WHERE project_id = ? ORDER BY created_at, user_id`, projectID)
+	if err != nil {
+		return DeletedProjectSnapshot{}, fmt.Errorf("list deleted project members: %w", err)
+	}
+	var memberUserIDs []int64
+	for rows.Next() {
+		var memberUserID int64
+		if err := rows.Scan(&memberUserID); err != nil {
+			_ = rows.Close()
+			return DeletedProjectSnapshot{}, fmt.Errorf("scan deleted project member: %w", err)
+		}
+		memberUserIDs = append(memberUserIDs, memberUserID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return DeletedProjectSnapshot{}, fmt.Errorf("iterate deleted project members: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return DeletedProjectSnapshot{}, fmt.Errorf("close deleted project members: %w", err)
 	}
 	actorUserID := &userID
 	meta := map[string]any{"name": name}
 	if err := insertAuditEventTx(ctx, tx, projectID, actorUserID, "project_deleted", "project", &projectID, meta); err != nil {
-		return fmt.Errorf("audit project_deleted: %w", err)
+		return DeletedProjectSnapshot{}, fmt.Errorf("audit project_deleted: %w", err)
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, projectID)
 	if err != nil {
-		return fmt.Errorf("delete project: %w", err)
+		return DeletedProjectSnapshot{}, fmt.Errorf("delete project: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("rows affected delete project: %w", err)
+		return DeletedProjectSnapshot{}, fmt.Errorf("rows affected delete project: %w", err)
 	}
 	if n == 0 {
-		return ErrNotFound
+		return DeletedProjectSnapshot{}, ErrNotFound
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit delete project: %w", err)
+		return DeletedProjectSnapshot{}, fmt.Errorf("commit delete project: %w", err)
 	}
-	return nil
+	return DeletedProjectSnapshot{ProjectID: projectID, Name: name, MemberUserIDs: memberUserIDs}, nil
 }
 
 // userCanCreateTagsInProject checks if user has access to create tags in a project.
@@ -1086,7 +1117,14 @@ func (s *Store) UpdateProjectName(ctx context.Context, projectID int64, userID i
 	return nil
 }
 
-// CreateAnonymousBoard creates a new project for anonymous board mode.
+// CreateAnonymousBoard creates a new shareable, expiring board (the /anon entrypoint).
+// The board type depends on whether the request carries an authenticated user, NOT on the
+// deployment mode:
+//   - No authenticated user (always in Anonymous Mode; in Full Mode when signed out) ->
+//     an Anonymous Board (creator_user_id NULL), which is never claimable.
+//   - Authenticated user (Full Mode, signed in) -> a Temporary Board (creator_user_id set),
+//     which only that creator may later claim into a Durable Project.
+//
 // Sets expires_at = now + TemporaryBoardLifetimeDays and last_activity_at = now.
 func (s *Store) CreateAnonymousBoard(ctx context.Context) (Project, error) {
 	nowMs := time.Now().UTC().UnixMilli()
@@ -1098,12 +1136,13 @@ func (s *Store) CreateAnonymousBoard(ctx context.Context) (Project, error) {
 		slug          string
 		creatorUserID *int64
 	)
-	// Check if user is authenticated - set creator_user_id if authenticated
+	// An authenticated request records the creator (Temporary Board); an unauthenticated
+	// request leaves creator_user_id NULL (Anonymous Board).
 	if userID, ok := UserIDFromContext(ctx); ok {
 		creatorUserID = &userID
 	}
 
-	// Set name based on whether board is created in anonymous mode (no creator) or auth state (with creator)
+	// Name reflects the board type: Anonymous Board (no creator) vs Temporary Board (creator set).
 	var name string
 	if creatorUserID == nil {
 		name = "Anonymous Board"

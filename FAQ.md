@@ -17,6 +17,7 @@
 - [How do I generate SCRUMBOY_ENCRYPTION_KEY?](#how-do-i-generate-scrumboy_encryption_key)
 - [Do I need to configure SMTP? What happens if I don't?](#do-i-need-to-configure-smtp-what-happens-if-i-dont)
 - [I configured SMTP - why don't I see Forgot your Scrumboy password?](#i-configured-smtp---why-dont-i-see-forgot-your-scrumboy-password)
+- [How do I turn on email notifications?](#how-do-i-turn-on-email-notifications)
 - [How does auditing work, and where can I see it?](#how-does-auditing-work-and-where-can-i-see-it)
 - [Does Scrumboy use telemetry, tracking, or “phone home”?](#does-scrumboy-use-telemetry-tracking-or-phone-home)
 - [What do I need to do to contribute?](#what-do-i-need-to-do-to-contribute)
@@ -46,7 +47,7 @@ Notes are still stored as raw markdown in `todos.body`. Todo titles and board ca
 
 Preview hardening: HTML in notes is not rendered; images stay as escaped text; dangerous link schemes and embedded content are stripped or neutralized.
 
-For architecture, security, and source references, see [`docs/markdown&mermaid.md`](docs/markdown&mermaid.md).
+For architecture, security, and source references, see [`docs/markdown-and-mermaid.md`](docs/markdown-and-mermaid.md).
 
 ## How do I enable Mermaid diagrams in my notes?
 
@@ -75,7 +76,7 @@ User-authored Mermaid `%%{init: ...}%%` directive blocks are stripped before ren
 
 The server exposes `mermaidNotesEnabled` on `/api/auth/status` alongside `markdownNotesEnabled`.
 
-For full architecture and security details, see [`docs/markdown&mermaid.md`](docs/markdown&mermaid.md).
+For full architecture and security details, see [`docs/markdown-and-mermaid.md`](docs/markdown-and-mermaid.md).
 
 # Board
 
@@ -87,33 +88,46 @@ In that dialog, turn on only the changes you want (each field has its own checkb
 
 A normal click on a card (without Ctrl/⌘) opens the usual single-todo editor and clears the selection. Viewers cannot use multi-select; Ctrl/⌘+click still opens one todo for them.
 
-## What is a temporary board?
+## What is a Temporary Board?
 
-A **temporary board** is a Scrumboy project with an **`expires_at`** timestamp. It is meant to be shared by URL (pastebin-style) rather than kept as a long-lived team project. Durable projects have **`expires_at` unset** and use normal sign-in, members, and roles.
+Scrumboy has three kinds of board, distinguished by two columns (`expires_at` and `creator_user_id`):
+
+- **Anonymous Board** - an expiring board with **no recorded creator** (`expires_at` set, `creator_user_id` null). Pastebin-style: anyone with the link can use it, and it **cannot be claimed**.
+- **Temporary Board** - an expiring board **attributed to the signed-in user who created it** (`expires_at` set, `creator_user_id` set). Shareable by link while temporary, and claimable **only by that creator**.
+- **Durable Project** - a normal, **non-expiring** project (`expires_at` unset) governed by owner/member roles. It is **not** publicly accessible just by knowing the slug.
 
 **How you get one**
 
-- Open **`/anon`** (or **`/temp`**, which redirects there). Scrumboy creates a new board and sends you to **`/{slug}`** - that link is how you share it.
-- In **full mode**, if you are signed in when the board is created, it is still temporary but recorded as yours (**“Temporary Board”**, with a `creator_user_id`). You can later **claim** it to turn it into a durable project (`POST /api/board/{slug}/claim` while logged in).
-- In **anonymous server mode** (`SCRUMBOY_MODE=anonymous`), the instance is built for temporary boards only; new boards from `/anon` have **no owner** (**“Anonymous Board”**, `creator_user_id` is null).
+- Open **`/anon`** (or **`/temp`**, which redirects there). Scrumboy creates a new expiring board and sends you to **`/{slug}`** - that link is how you share it.
+- In **Anonymous Mode** (`SCRUMBOY_MODE=anonymous`), the instance has no users; **Anonymous Mode is built for Anonymous Boards only**, so `/anon` always creates an **Anonymous Board**.
+- In **Full Mode while signed out**, `/anon` also creates an **Anonymous Board** (no creator).
+- In **Full Mode while signed in**, `/anon` creates a **Temporary Board** attributed to you (`creator_user_id` = your user).
 
-**Anonymous temporary boards** (no owner: `expires_at` is set and `creator_user_id` is null) can be used **without signing in**. Anyone with the link can create, edit, move, and delete todos and rename the board. They cannot assign todos to users, change the project image, or delete the whole project from the UI. Tag colors on that board are shared for everyone on the link.
+**Claiming (Temporary Board → Durable Project)**
+
+- Only the **recorded creator** of a Temporary Board can claim it: `POST /api/board/{slug}/claim` while signed in as that creator. Claiming clears `expires_at`, makes you the owner, and grants you maintainer membership.
+- **Anonymous Boards cannot be claimed** - there is no creator to authorize the conversion - and the claim route is **disabled entirely in Anonymous Mode**.
+- Another signed-in user who merely has the link **cannot** claim your Temporary Board; they receive **not found**.
+- After a successful claim the board becomes a **Durable Project**: the **slug is retained**, but it **stops granting public access**. From then on access requires **ownership or membership** - an unrelated authenticated user, or an unauthenticated visitor, requesting the same slug receives **404**. Because it is no longer temporary, a **repeat** `POST /api/board/{slug}/claim` also returns **not found**.
+
+**Using an Anonymous Board** (`expires_at` set, `creator_user_id` null) works **without signing in**. Anyone with the link can create, edit, move, and delete todos and rename the board. They cannot assign todos to users, change the project image, or delete the whole project from the UI. Tag colors on that board are shared for everyone on the link.
 
 **When it expires**
 
-- New temporary boards start with **`expires_at` about 90 days ahead** (`TemporaryBoardLifetimeDays` in the server code).
+- New expiring boards (Temporary and Anonymous Boards) start with **`expires_at` about 90 days ahead** (`TemporaryBoardLifetimeDays` in the server code).
 - **Yes, activity resets the expiry window** - but not as a separate “inactivity counter.” When the board is used, the server runs **`UpdateBoardActivity`**, which sets **`expires_at` to about 90 days from that moment** (rolling lifetime). Qualifying activity includes loading the board (for example a full board read) and todo changes (create, update, move, delete). Updates are **throttled to at most once every 5 minutes** per board so rapid refreshes do not hammer the database.
 - After **`expires_at` has passed**, the board URL returns **404** for reads and edits until the server removes the expired row. There is no “grace period” in the API after expiry.
 
-**Compared to a normal project**
+**Compared to a Durable Project**
 
-| | Temporary board | Durable project |
+| | Expiring board (Temporary / Anonymous) | Durable Project |
 |--|-----------------|-----------------|
 | Lifetime | `expires_at` (90-day rolling window with activity) | No expiry |
-| Sharing | Link-based; anonymous temps need no login | Members and roles |
-| Delete project | Not offered for anonymous temps | Maintainers can delete |
+| Sharing | Link-based; Anonymous Boards need no login | Members and roles |
+| Claimable | Temporary Boards, by their creator only; Anonymous Boards never | n/a (already durable) |
+| Delete project | Not offered for Anonymous Boards | Maintainers can delete |
 
-For permissions detail, see [`docs/roles_and_permissions.md`](docs/roles_and_permissions.md).
+For permissions detail, see [`docs/roles-and-permissions.md`](docs/roles-and-permissions.md).
 
 # Dashboard
 
@@ -223,13 +237,13 @@ Do not confuse them: turning on desktop notifications does **not** replace VAPID
 - `SCRUMBOY_VAPID_PUBLIC_KEY`
 - `SCRUMBOY_VAPID_PRIVATE_KEY`
 
-(URL-safe base64 from a VAPID generator.) When both are set in **full mode**, signed-in clients may try to subscribe automatically; each user must still **allow notifications** in the browser. **Settings → Customization → Web Push** can turn push off or back on per device.
+(URL-safe base64 from a VAPID generator — a **matching** pair.) Non-empty strings alone are not enough: the keys must decode to a valid matching P-256 pair, the optional subscriber must be valid (or unset for the default), and the server must run in **full mode**. When push is **effectively enabled** (`pushConfigured: true` / `push.state: "enabled"` on signed-in auth status), signed-in clients may try to subscribe automatically; each user must still **allow notifications** in the browser. **Settings → Customization → Web Push** can turn push off or back on per device.
 
 Optional: `SCRUMBOY_VAPID_SUBSCRIBER` is a **contact hint for push providers** (plain email or `mailto:` / `https:` URL). It does **not** control who can sign in and does not need to match OIDC or user emails.
 
-**Not telemetry:** VAPID identifies **your** Scrumboy server to the push network so assignment events can be delivered. It is not product analytics and does not send board data to Scrumboy’s project maintainers.
+**Not telemetry:** VAPID identifies **your** Scrumboy server to the push network so assignment events can be delivered. It is not product analytics and does not send board data to Scrumboy’s project maintainers. Assignment push payloads do include the **todo title** (and project slug / todo id) in the encrypted Web Push body — see [`docs/vapid.md`](docs/vapid.md#what-gets-sent-and-what-does-not).
 
-For what VAPID is, how it fits this project, key generation, and verification, see [`docs/vapid.md`](docs/vapid.md). For PWA install, Docker wiring, and auto-subscribe behavior, see [`docs/pwa.md`](docs/pwa.md).
+For enablement validation, status/reason fields, key generation, and verification, see [`docs/vapid.md`](docs/vapid.md). For PWA install, Docker wiring, and auto-subscribe behavior, see [`docs/pwa.md`](docs/pwa.md).
 
 ## How do I generate SCRUMBOY_ENCRYPTION_KEY?
 
@@ -292,6 +306,10 @@ Setting the SMTP host alone is not enough. Scrumboy only shows **Forgot your Scr
 
 If the capability is `true` but mail never arrives after you submit an address, that is a delivery/credentials issue (try `SCRUMBOY_SMTP_DEBUG=1`), not this UI gate. Admins can still generate a reset link under Settings → Users → Password. Full setup details: [`docs/smtp.md`](docs/smtp.md).
 
+## How do I turn on email notifications?
+
+Email notifications reuse the same SMTP config as self-service password reset (`SCRUMBOY_SMTP_HOST`, `SCRUMBOY_SMTP_FROM`, `SCRUMBOY_PUBLIC_BASE_URL`), but do **not** need `SCRUMBOY_ENCRYPTION_KEY`. Once the server reports `emailNotifyAvailable: true` on `GET /api/auth/status`, each user opts in individually under Settings → Customization: a master toggle (off by default) plus five category checkboxes (card assigned to me and added to a project default on; card/sprint/project activity default off). No email sends unless both the master toggle and the relevant category are on for that user. See [`docs/notifications.md`](docs/notifications.md) for the full category/recipient breakdown.
+
 # Auditing
 
 ## How does auditing work, and where can I see it?
@@ -305,7 +323,7 @@ Scrumboy **records an audit trail automatically** while you use the product. The
 - Project created, renamed, image updated, default sprint weeks changed, or deleted
 - Todo links added or removed
 
-Each event stores **who** did it (`actor_user_id`, or NULL on anonymous boards), **what** happened (`action`), **which entity** (`target_type` / `target_id`), and **JSON metadata** (for example column moves or changed field names - not full note bodies). Rows are **append-only** (the database blocks updates and deletes on `audit_events`).
+Each event stores **who** did it (`actor_user_id`, or NULL on anonymous boards), **what** happened (`action`), **which entity** (`target_type` / `target_id`), and **JSON metadata**. Metadata varies by action: some events store full user-provided strings (todo titles on create, project names on create/rename/delete, tag names in tag diffs); title/body **updates** store lengths only; note bodies are never stored in audit metadata. Rows are **append-only** at the application level (database triggers reject ordinary updates and deletes on `audit_events`; that is not a guarantee against privileged database or filesystem access).
 
 **Assignee changes** are tracked separately in **`todo_assignee_events`**, not duplicated in `audit_events`.
 
@@ -319,9 +337,9 @@ ORDER BY created_at DESC
 LIMIT 50;
 ```
 
-Project backups/exports may also include audit data depending on scope; see your backup workflow.
+JSON project backups/exports do **not** include `audit_events`. Keep a file-level `DATA_DIR` backup if you need the audit table for disaster recovery.
 
-For the full action list, metadata shapes, and security notes, see [`docs/audit_trail.md`](docs/audit_trail.md).
+For the full action list, metadata disclosure table, and security notes, see [`docs/audit-trail.md`](docs/audit-trail.md).
 
 # Privacy
 

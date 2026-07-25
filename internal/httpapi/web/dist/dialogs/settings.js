@@ -5,7 +5,7 @@ import { escapeHTML, showToast, getAppVersion, showConfirmDialog, confirmDelete,
 import { getStoredTheme, handleThemeChange, THEME_SYSTEM, THEME_DARK, THEME_LIGHT } from '../theme.js';
 import { getStoredWallpaperState, setWallpaperOff, setWallpaperColor, uploadWallpaperImage } from '../wallpaper.js';
 import { processWallpaperFileForUpload } from '../utils.js';
-import { getSlug, getBoard, getProjectId, getProjects, getSettingsProjectId, getSettingsActiveTab, getTagColors, getUser, getAuthStatusAvailable, getOidcEnabled, getLocalAuthEnabled, getPushConfigured, getPushStatus, getBackupImportBtn, getBackupData, getBackupPreview, getTrelloImportBtn, getTrelloImportData, getTrelloImportPreview, getTrelloImportResult, getBoardMembers } from '../state/selectors.js';
+import { getSlug, getBoard, getProjectId, getProjects, getSettingsProjectId, getSettingsActiveTab, getTagColors, getUser, getAuthStatusAvailable, getOidcEnabled, getLocalAuthEnabled, getPushConfigured, getEmailNotifyAvailable, getPushStatus, getBackupImportBtn, getBackupData, getBackupPreview, getTrelloImportBtn, getTrelloImportData, getTrelloImportPreview, getTrelloImportResult, getBoardMembers } from '../state/selectors.js';
 import { setSettingsProjectId, setSettingsActiveTab, setBackupImportBtn, setBackupData, setBackupPreview, setTrelloImportBtn, setTrelloImportData, setTrelloImportPreview, setTrelloImportResult, setUser, setBoardMembers, } from '../state/mutations.js';
 import { renderRealBurndownChart, destroyBurndownChart, mountBurndownChart } from '../charts/burndown.js';
 import { emit } from '../events.js';
@@ -14,6 +14,7 @@ import { KEY_ACTION_LIST, chordFromKeyboardEvent, formatChordForDisplay, getReso
 import { requestDesktopNotificationPermission, getDesktopNotificationStatusDescription, getDesktopNotificationStatusKind, } from '../core/assignmentNotify.js';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '../core/push.js';
 import { getVoiceFlowEnabledPreference, setVoiceFlowEnabledPreference } from '../core/voiceflow-preferences.js';
+import { getEmailNotifyViewState, setEmailNotifyPref } from '../core/email-notify-preferences.js';
 import { bindWorkflowTabInteractions, clearWorkflowDraftState, invalidateWorkflowLaneCountsCache, isWorkflowDraftDirty, loadWorkflowTabContent, resetWorkflowDraftToBaseline, } from './settings-workflow.js';
 import { bindTagTabInteractions, invalidateTagsCache as invalidateTagSettingsCache, loadTagSettingsContent, } from './settings-tags.js';
 import { bindSprintsTabInteractions, refreshSprintDateLabels, renderSprintsTabContent } from './settings-sprints.js';
@@ -408,6 +409,32 @@ function bindDialogLocale(dialog, sync) {
     dialog.addEventListener("cancel", handleNativeCleanup);
     dialog.addEventListener("close", handleNativeCleanup);
     return release;
+}
+/**
+ * Wire uniform, orphan-free teardown for a dynamically-created dialog.
+ *
+ * Returns an idempotent `close()` that releases the locale listener, runs any
+ * caller cleanup, and removes the node from the DOM. Native dismiss paths
+ * (Escape / light-dismiss `cancel`, and the `close` event) are routed through
+ * the same `close()` so the node can never be left detached-but-present, which
+ * would otherwise duplicate element IDs and misbind handlers on reopen.
+ */
+function attachDialogClose(dialog, releaseLocale, extraCleanup) {
+    let removed = false;
+    const close = () => {
+        if (removed)
+            return;
+        removed = true;
+        extraCleanup?.();
+        releaseLocale();
+        dialog.remove();
+    };
+    dialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        close();
+    });
+    dialog.addEventListener("close", close);
+    return close;
 }
 /**
  * Re-localize the Web Push hint without probing push capability or changing the
@@ -1455,6 +1482,37 @@ export async function renderSettingsModal(options) {
         ${renderPublicLocaleSelectHTML({ id: "settingsLocaleSelect", style: "margin-top: 10px; min-width: 180px;" })}
       </div>
     `;
+    const emailNotifyAvailable = showProfileTab && getEmailNotifyAvailable();
+    const emailNotifyState = showProfileTab ? getEmailNotifyViewState() : null;
+    const emailNotifyPref = emailNotifyState?.value ?? null;
+    const emailNotifyReady = emailNotifyState?.status === "ready";
+    const emailNotifyInteractive = emailNotifyAvailable && emailNotifyReady;
+    const emailCategoryRows = [
+        { key: "assigned", labelKey: "settings.customization.emailNotify.category.assigned", label: "When a card is assigned to me" },
+        { key: "cardActivity", labelKey: "settings.customization.emailNotify.category.cardActivity", label: "Card created, moved, or deleted" },
+        { key: "sprintActivity", labelKey: "settings.customization.emailNotify.category.sprintActivity", label: "Sprint activity" },
+        { key: "projectActivity", labelKey: "settings.customization.emailNotify.category.projectActivity", label: "Project, workflow, or tag changes" },
+        { key: "addedToProject", labelKey: "settings.customization.emailNotify.category.addedToProject", label: "When I'm added to a project" },
+    ];
+    const emailNotifySectionHTML = showProfileTab ? `
+      <div class="settings-section settings-section--email-notify${!emailNotifyAvailable ? " settings-section--email-notify-disabled" : ""}">
+        <div class="settings-section__title" data-i18n-text="settings.customization.emailNotify.title">Email notifications</div>
+        <div class="settings-section__description muted" data-i18n-text="settings.customization.emailNotify.description">Get emailed about activity on your boards. Off by default.</div>
+        ${!emailNotifyAvailable ? `<p class="muted" style="margin:8px 0;font-size:13px;" data-i18n-text="settings.customization.emailNotify.unavailableNotice">Email notifications require SMTP to be configured on the server (see docs).</p>` : ""}
+        ${emailNotifyAvailable && emailNotifyState?.status === "error" ? `<p class="muted" style="margin:8px 0;font-size:13px;" data-i18n-text="settings.customization.emailNotify.loadFailed">Could not load email notification settings. Reload the page to try again.</p>` : ""}
+        <label class="row" style="align-items:center;gap:8px;margin-top:10px;cursor:pointer;">
+          <input type="checkbox" id="emailNotifyEnabledToggle" ${!emailNotifyInteractive ? "disabled" : ""} ${emailNotifyPref?.enabled ? "checked" : ""} />
+          <span data-i18n-text="settings.customization.emailNotify.toggleLabel">Email notifications on</span>
+        </label>
+        <div class="email-notify-categories" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;">
+          ${emailCategoryRows.map((row) => `
+          <label class="row" style="align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" class="email-notify-category-toggle" data-category="${row.key}" ${(!emailNotifyInteractive || !emailNotifyPref?.enabled) ? "disabled" : ""} ${emailNotifyPref?.[row.key] ? "checked" : ""} />
+            <span data-i18n-text="${row.labelKey}">${escapeHTML(row.label)}</span>
+          </label>`).join("")}
+        </div>
+      </div>
+    ` : "";
     const customizationHTML = activeSettingsTab === "customization" ? `
     <div id="settingsCustomizationContent">
       ${languageSectionHTML}
@@ -1494,6 +1552,7 @@ export async function renderSettingsModal(options) {
         </label>
         <p class="muted" id="pushNotifyHint" style="margin:8px 0 0 0;font-size:13px;"></p>
       </div>
+      ${emailNotifySectionHTML}
       <div class="settings-section settings-section--keybindings">
         <div class="settings-section__title" data-i18n-text="settings.customization.keybindings.title">Keybindings</div>
         <div class="settings-section__description muted" data-i18n-text="settings.customization.keybindings.description">Click a key to record a new shortcut. Press Esc to cancel while listening.</div>
@@ -2002,6 +2061,46 @@ export async function renderSettingsModal(options) {
                 }, { signal });
             }
         }
+        const emailNotifyEnabledToggle = document.getElementById("emailNotifyEnabledToggle");
+        if (emailNotifyEnabledToggle && !emailNotifyEnabledToggle.hasAttribute("disabled")) {
+            emailNotifyEnabledToggle.addEventListener("change", async () => {
+                const pref = getEmailNotifyViewState().value;
+                if (!pref)
+                    return;
+                document.querySelectorAll("#emailNotifyEnabledToggle, .email-notify-category-toggle").forEach((control) => {
+                    control.disabled = true;
+                });
+                try {
+                    await setEmailNotifyPref({ ...pref, enabled: emailNotifyEnabledToggle.checked });
+                }
+                catch {
+                    showToast(t("settings.customization.emailNotify.saveFailed"));
+                }
+                await renderSettingsModal();
+            }, { signal });
+        }
+        document.querySelectorAll(".email-notify-category-toggle").forEach((toggle) => {
+            if (toggle.hasAttribute("disabled"))
+                return;
+            toggle.addEventListener("change", async () => {
+                const category = toggle.getAttribute("data-category");
+                if (!category)
+                    return;
+                const pref = getEmailNotifyViewState().value;
+                if (!pref)
+                    return;
+                document.querySelectorAll("#emailNotifyEnabledToggle, .email-notify-category-toggle").forEach((control) => {
+                    control.disabled = true;
+                });
+                try {
+                    await setEmailNotifyPref({ ...pref, [category]: toggle.checked });
+                }
+                catch {
+                    showToast(t("settings.customization.emailNotify.saveFailed"));
+                }
+                await renderSettingsModal();
+            }, { signal });
+        });
         resetKeybindingCaptureUI();
         document.querySelectorAll("[data-keybinding-capture]").forEach((btn) => {
             btn.addEventListener("click", () => {
@@ -2172,13 +2271,10 @@ function showPasswordResetDialog(userId) {
     document.body.appendChild(dialog);
     dialog.showModal();
     const releaseLocale = bindDialogLocale(dialog);
-    const closeBtn = document.getElementById("passwordResetDialogClose");
-    const cancelBtn = document.getElementById("passwordResetCancel");
-    const form = document.getElementById("passwordResetForm");
-    const close = () => {
-        releaseLocale();
-        document.body.removeChild(dialog);
-    };
+    const closeBtn = dialog.querySelector("#passwordResetDialogClose");
+    const cancelBtn = dialog.querySelector("#passwordResetCancel");
+    const form = dialog.querySelector("#passwordResetForm");
+    const close = attachDialogClose(dialog, releaseLocale);
     if (closeBtn)
         closeBtn.addEventListener("click", close);
     if (cancelBtn)
@@ -2236,13 +2332,10 @@ function showPasswordResetFallbackDialog(resetUrl) {
     document.body.appendChild(dialog);
     dialog.showModal();
     const releaseLocale = bindDialogLocale(dialog);
-    const closeBtn = document.getElementById("passwordResetFallbackClose");
-    const copyBtn = document.getElementById("passwordResetFallbackCopy");
-    const urlInput = document.getElementById("passwordResetUrlDisplay");
-    const close = () => {
-        releaseLocale();
-        document.body.removeChild(dialog);
-    };
+    const closeBtn = dialog.querySelector("#passwordResetFallbackClose");
+    const copyBtn = dialog.querySelector("#passwordResetFallbackCopy");
+    const urlInput = dialog.querySelector("#passwordResetUrlDisplay");
+    const close = attachDialogClose(dialog, releaseLocale);
     if (closeBtn)
         closeBtn.addEventListener("click", close);
     dialog.addEventListener("click", (e) => {
@@ -2328,13 +2421,13 @@ function showCreateUserDialog() {
   `;
     document.body.appendChild(dialog);
     dialog.showModal();
-    const closeBtn = document.getElementById("createUserDialogClose");
-    const cancelBtn = document.getElementById("createUserCancel");
-    const form = document.getElementById("createUserForm");
-    const emailInput = document.getElementById("createUserEmail");
-    const nameInput = document.getElementById("createUserName");
-    const passwordInput = document.getElementById("createUserPassword");
-    const passwordToggle = document.getElementById("createUserPasswordToggle");
+    const closeBtn = dialog.querySelector("#createUserDialogClose");
+    const cancelBtn = dialog.querySelector("#createUserCancel");
+    const form = dialog.querySelector("#createUserForm");
+    const emailInput = dialog.querySelector("#createUserEmail");
+    const nameInput = dialog.querySelector("#createUserName");
+    const passwordInput = dialog.querySelector("#createUserPassword");
+    const passwordToggle = dialog.querySelector("#createUserPasswordToggle");
     const passwordIconPath = passwordToggle?.querySelector("path");
     const PATH_SHOW = "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z";
     const PATH_HIDE = "M2 5.27L3.28 4 20 20.72 18.73 22 15.65 18.92C14.5 19.3 13.28 19.5 12 19.5 7 19.5 2.73 16.39 1 12c.69-1.76 1.79-3.31 3.19-4.54L2 5.27zM12 9a3 3 0 0 1 3 3c0 .35-.06.69-.17 1l-3.83-3.83c.31-.06.65-.17 1-.17zM12 4.5c5 0 9.27 3.11 11 7.5-.82 2.08-2.21 3.88-4 5.19L17.58 15.76C18.94 14.82 20.06 13.54 20.82 12 19.17 8.64 15.76 6.5 12 6.5c-1.09 0-2.16.18-3.16.5L7.3 5.47C8.74 4.85 10.33 4.5 12 4.5zM3.18 12C4.83 15.36 8.24 17.5 12 17.5c.69 0 1.37-.07 2-.21L11.72 15c-1.43-.15-2.57-1.29-2.72-2.72L5.6 8.87C4.61 9.72 3.78 10.78 3.18 12z";
@@ -2357,10 +2450,10 @@ function showCreateUserDialog() {
             syncPasswordToggleLabel();
         });
     }
-    const close = () => {
-        releaseLocale();
-        document.body.removeChild(dialog);
-    };
+    const close = attachDialogClose(dialog, releaseLocale, () => {
+        if (passwordInput)
+            passwordInput.value = "";
+    });
     if (closeBtn) {
         closeBtn.addEventListener("click", close);
     }
@@ -2372,7 +2465,7 @@ function showCreateUserDialog() {
             close();
         }
     });
-    if (form) {
+    if (form && emailInput && nameInput && passwordInput) {
         form.addEventListener("submit", async (e) => {
             e.preventDefault();
             const email = emailInput.value.trim();
@@ -2575,19 +2668,19 @@ async function showEnable2FADialog() {
         document.body.appendChild(dialog);
         dialog.showModal();
         const releaseLocale = bindDialogLocale(dialog);
-        const close = () => {
-            releaseLocale();
-            document.body.removeChild(dialog);
-        };
-        document.getElementById("enable2FAClose")?.addEventListener("click", close);
-        document.getElementById("enable2FACancel")?.addEventListener("click", close);
+        const form = dialog.querySelector("#enable2FAForm");
+        const codeInput = dialog.querySelector("#enable2FACode");
+        const errorEl = dialog.querySelector("#enable2FAError");
+        const close = attachDialogClose(dialog, releaseLocale, () => {
+            if (codeInput)
+                codeInput.value = "";
+        });
+        dialog.querySelector("#enable2FAClose")?.addEventListener("click", close);
+        dialog.querySelector("#enable2FACancel")?.addEventListener("click", close);
         dialog.addEventListener("click", (e) => {
             if (e.target === dialog)
                 close();
         });
-        const form = document.getElementById("enable2FAForm");
-        const codeInput = document.getElementById("enable2FACode");
-        const errorEl = document.getElementById("enable2FAError");
         const showError = (msg) => {
             if (errorEl) {
                 errorEl.textContent = msg;
@@ -2656,12 +2749,9 @@ function showRecoveryCodesDialog(codes) {
     document.body.appendChild(dialog);
     dialog.showModal();
     const releaseLocale = bindDialogLocale(dialog);
-    const close = () => {
-        releaseLocale();
-        document.body.removeChild(dialog);
-    };
-    document.getElementById("recoveryCodesClose")?.addEventListener("click", close);
-    document.getElementById("recoveryCodesDone")?.addEventListener("click", close);
+    const close = attachDialogClose(dialog, releaseLocale);
+    dialog.querySelector("#recoveryCodesClose")?.addEventListener("click", close);
+    dialog.querySelector("#recoveryCodesDone")?.addEventListener("click", close);
     dialog.addEventListener("click", (e) => {
         if (e.target === dialog)
             close();
@@ -2691,18 +2781,18 @@ function showDisable2FADialog() {
     document.body.appendChild(dialog);
     dialog.showModal();
     const releaseLocale = bindDialogLocale(dialog);
-    const close = () => {
-        releaseLocale();
-        document.body.removeChild(dialog);
-    };
-    document.getElementById("disable2FAClose")?.addEventListener("click", close);
-    document.getElementById("disable2FACancel")?.addEventListener("click", close);
+    const form = dialog.querySelector("#disable2FAForm");
+    const passwordInput = dialog.querySelector("#disable2FAPassword");
+    const close = attachDialogClose(dialog, releaseLocale, () => {
+        if (passwordInput)
+            passwordInput.value = "";
+    });
+    dialog.querySelector("#disable2FAClose")?.addEventListener("click", close);
+    dialog.querySelector("#disable2FACancel")?.addEventListener("click", close);
     dialog.addEventListener("click", (e) => {
         if (e.target === dialog)
             close();
     });
-    const form = document.getElementById("disable2FAForm");
-    const passwordInput = document.getElementById("disable2FAPassword");
     if (form && passwordInput) {
         form.addEventListener("submit", async (e) => {
             e.preventDefault();

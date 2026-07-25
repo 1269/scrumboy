@@ -1,6 +1,101 @@
 # Changelog
 
-> **Upgrades:** No breaking changes in **3.7.x** / **3.8.x** / **3.9.x** / **3.10.x** / **3.11.x** / **3.12.x** / **3.13.x** / **3.14.x** / **3.15.x** / **3.16.x** / **3.17.x** / **3.18.x** / **3.19.x** / **3.20.x** / **3.21.x** / **3.22.x** unless noted below. **3.22.0** has MCP/OAuth upgrade impact — see that release.
+> **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.24.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names) - see those releases.
+
+## [3.24.2] - 2026-07-24
+
+### Added
+
+- **MCP tools for workflow columns** - `workflow_list`, `workflow_create`, `workflow_update`, and `workflow_delete` expose a project's workflow columns (board lanes) over MCP, calling the same store methods as the cookie-only `GET/POST/PATCH/DELETE /api/board/{slug}/workflow` REST endpoints so `sb_` Bearer API tokens can reach them. Create/update/delete require maintainer role or higher; `workflow_update` sets both name and color; `workflow_delete` removes an empty non-done column. See [API.md](API.md#workflow).
+
+## [3.24.1] - 2026-07-24
+
+### Added
+
+- **MCP tools for Linked Stories** - `todos_linksList`, `todos_linkAdd`, and `todos_linkRemove` expose the todo detail page's "Linked Stories" relation (`relates_to`, `blocks`, `duplicates`, `parent`) over MCP, matching the existing `GET/POST/DELETE /api/board/{slug}/todos/{localId}/links[/targetLocalId]` REST endpoints. Links are directed from `localId` to `targetLocalId` with `localId` as the subject of the type. Previously this relation had no MCP surface at all — the only related tool, `todos_search`, just searches link *targets* for the picker UI and never applied a link. See [API.md](API.md#todos).
+
+### Limitations
+
+- **MCP mutations do not refresh open web clients (or fan out card-activity email)** - Unlike REST, MCP tools call the store directly and do not emit `board.refresh_needed` (e.g. `todo_links_updated`). An agent can change links (or other board data) while a browser stays stale until another refresh.
+
+
+## [3.24.0] - 2026-07-24
+
+### Changed
+
+- **MCP tool names renamed from dot- to underscore-separated (compatibility-relevant)** — Claude's MCP client validates every tool name returned by `tools/list` against `^[a-zA-Z0-9_-]{1,64}$` (letters, digits, underscore, hyphen only). Scrumboy's MCP tools were named with dots (`todos.create`, `sprints.getActive`, `board.get`, etc.), which fail that regex; because Claude validates the whole `tools/list` array as one schema, a single invalid name broke tool-calling for *every* MCP server connected to the session, not just Scrumboy, until Scrumboy was disconnected. All 28 tool names now use underscores instead (e.g. `todos.create` → `todos_create`).
+  - **Compatibility:** The old dotted names are still accepted for direct tool invocation (`tools/call` and the legacy `POST /mcp {"tool": "..."}` endpoint) via a dispatch-only alias table, so existing external MCP callers keep working. They no longer appear in `tools/list` or `system_getCapabilities` discovery — new integrations must use the underscore names. Direct invocation remains compatible, so this ships as a minor rather than a major.
+  - **Action required:** external integrations that hardcode the old dotted tool names should migrate to the underscore names when convenient. The dotted aliases are kept indefinitely as a compatibility shim — see [docs/mcp.md](docs/mcp.md) — there is no planned removal.
+
+## [3.23.2] - 2026-07-24
+
+### Added
+
+- **Admin-configurable default email notification preferences for new users** - Admins/owners can set an org-wide default that newly created users inherit, via `GET`/`PUT`/`DELETE /api/admin/settings/email-notify-default`. Seeding happens at creation time only and never rewrites existing users. When no override is configured, no preference row is created for new users, so an untouched instance behaves exactly as before. `DELETE` resets to the unconfigured state (`204`, idempotent). See [docs/notifications.md](docs/notifications.md).
+
+### Changed
+
+- **`user_preferences` provenance** - New `provenance` column (migration 059; `legacy` / `user` / `org_default`) records how each preference row was written. Existing rows become `legacy`; explicit user saves are tagged `user`; org-seeded rows are `org_default`. This is groundwork so a future bulk-apply can safely target only org-seeded rows and never overwrite user-customized ones. **Upgrade note:** remove any hand-rolled `AFTER INSERT ON users` preference trigger before upgrading — explicit-column triggers keep working, but positional `INSERT INTO user_preferences VALUES (...)` triggers become structurally invalid once the column is added. Running an older binary against a 059-migrated database is unsupported (forward-only upgrades).
+
+## [3.23.1] - 2026-07-24
+
+### Fixed
+
+- **`tags.updateProjectColor` on durable projects** - The MCP tool no longer 404s for every user-owned tag on authenticated projects. Existence is checked against the same project tag set as `tags.listProject` (not board-scoped-only `GetProjectScopedTagByID`), and clearing an unset user-owned color preference is treated as a successful no-op (matching `tags.updateMineColor`). `tags.deleteProject` remains board-scoped-only.
+
+### Documentation
+
+- **`tags.updateProjectColor` color semantics** - `API.md` and the MCP `tools/list` description clarify that board-scoped tags update shared `tags.color`, while user-owned tags update this viewer's per-viewer preference.
+
+## [3.23.0] - 2026-07-22
+
+### Added
+
+- **Opt-in email notifications** - Builds on the SMTP infrastructure added in 3.19.0. Each user can enable email notifications under Settings → Customization and choose per-category opt-in: card assigned to them and added to a project (on by default), plus card activity, sprint activity, and project/workflow/tag activity (off by default). No email sends unless both the master toggle and the relevant category are enabled for that user; the instance also needs `SCRUMBOY_SMTP_*` and `SCRUMBOY_PUBLIC_BASE_URL` configured (no `SCRUMBOY_ENCRYPTION_KEY` required). `GET /api/auth/status` reports readiness via a new `emailNotifyAvailable` flag. See [docs/notifications.md](docs/notifications.md).
+- **`project.membership` domain event** - New event bus event published on project member add/remove/role-change, carrying the affected user and actor, so non-realtime consumers (like the email notifier) can target the specific member without a board-wide payload.
+
+### Changed
+
+- **`board.refresh_needed` payload** - Now includes a best-effort `actorUserId` (from the ambient request actor) alongside the existing `reason` string. Additive; existing SSE consumers are unaffected.
+
+## [3.22.7] - 2026-07-22
+
+### Fixed
+
+- **Settings Create User dialog lifecycle** - Escape / native dismiss no longer leaves an orphaned `<dialog>` in the DOM with duplicate IDs, which previously broke Cancel, password reveal, and Create (submit closed without calling `POST /api/admin/users`). Dynamic Settings dialogs now use scoped lookups and an idempotent remove-on-close teardown; Create User also clears the temporary password on close.
+- **Keybindings chord parsing** - `chordFromKeyboardEvent` null-guards missing `code`/`key` so IME or synthetic keydowns no longer throw in the capture-phase global handler.
+
+## [3.22.6] - 2026-07-22
+
+### Security
+
+- **Temporary Board claim authorization (GHSA-vph4-pmmh-ch6x)** — `POST /api/board/{slug}/claim` now permits conversion only by the recorded creator of a Full Mode Temporary Board. Previously, claim authorization checked `owner_user_id`, which is null before a Temporary Board is claimed, instead of verifying `creator_user_id`; an authenticated user with the shared slug could therefore claim another user's board and lock the creator out. Anonymous Boards cannot be claimed, and conversion now uses an atomic state transition before maintainer membership is granted.
+
+## [3.22.5] - 2026-07-21
+
+### Changed
+
+- **Frontend dependency upgrades** - Bump `dompurify` to `3.4.12`, `markdown-it` to `14.3.0`, `mermaid` to `11.16.0`, and `happy-dom` to `20.10.6`; sync vendored `/vendor` browser assets.
+
+## [3.22.4] - 2026-07-20
+
+### Security
+
+- **Pin CI/CD dependencies** - Pin GitHub Actions and reusable OSV workflows to immutable commit SHAs, and pin Dockerfile base images (`golang:1.25.12-alpine`, `alpine:3.20`) to multi-platform manifest digests.
+
+## [3.22.3] - 2026-07-20
+
+### Added
+
+- **OSV Scanner CI** - GitHub Actions workflow scans Go and npm lockfiles with OSV Scanner on dependency-path PRs, merges, pushes, and a weekly schedule.
+
+### Changed
+
+- **Go dependency upgrades** - Bump `golang.org/x/crypto` to `v0.54.0`, `golang.org/x/oauth2` to `v0.36.0`, `golang.org/x/term` to `v0.45.0`, and transitive `golang.org/x/sys` to `v0.47.0`; promote `golang-jwt/jwt/v5` to a direct require.
+
+### Security
+
+- **OSV ignore for `GO-2026-5932`** - `osv-scanner.toml` documents that Scrumboy does not import `golang.org/x/crypto/openpgp` or its affected subpackages.
 
 ## [3.22.2] - 2026-07-19
 

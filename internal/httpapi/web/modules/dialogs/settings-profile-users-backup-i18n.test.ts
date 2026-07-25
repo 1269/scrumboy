@@ -504,6 +504,71 @@ describe('settings i18n (profile / users / backup / customization)', () => {
     expect(apiFetchMock).not.toHaveBeenCalled();
   });
 
+  it('removes the Create-User dialog on Escape so reopening leaves a single live, wired dialog', async () => {
+    const owner = { id: 1, name: 'Owner', email: 'owner@example.com', systemRole: 'owner', twoFactorEnabled: false };
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/admin/users') return [{ id: 1, name: 'Owner', email: 'owner@example.com', systemRole: 'owner' }];
+      return undefined;
+    });
+    await setupSettingsView({ activeTab: 'users', user: owner });
+
+    // Open, then dismiss via the native Escape / light-dismiss `cancel` path.
+    document.getElementById('createUserBtn')?.dispatchEvent(new Event('click'));
+    await flushPromises();
+    expect(document.querySelectorAll('#createUserForm')).toHaveLength(1);
+    const firstDialog = document.querySelector('body > dialog.dialog') as HTMLDialogElement;
+    firstDialog.dispatchEvent(new Event('cancel'));
+
+    // Node must be fully removed, not just closed-and-detached.
+    expect(document.querySelectorAll('#createUserForm')).toHaveLength(0);
+    expect(document.querySelector('body > dialog.dialog')).toBeNull();
+
+    // Reopen, then dismiss via the Cancel button (the reported dead control).
+    document.getElementById('createUserBtn')?.dispatchEvent(new Event('click'));
+    await flushPromises();
+    expect(document.querySelectorAll('#createUserForm')).toHaveLength(1);
+    const secondDialog = document.querySelector('body > dialog.dialog') as HTMLDialogElement;
+    document.getElementById('createUserCancel')?.dispatchEvent(new Event('click'));
+    expect(document.querySelectorAll('#createUserForm')).toHaveLength(0);
+    expect(secondDialog.isConnected).toBe(false);
+
+    // Third open: exactly one dialog, and its own handlers are the live ones.
+    document.getElementById('createUserBtn')?.dispatchEvent(new Event('click'));
+    await flushPromises();
+    expect(document.querySelectorAll('#createUserForm')).toHaveLength(1);
+
+    const dialog = document.querySelector('body > dialog.dialog') as HTMLDialogElement;
+    const emailInput = document.getElementById('createUserEmail') as HTMLInputElement;
+    const nameInput = document.getElementById('createUserName') as HTMLInputElement;
+    const passwordInput = document.getElementById('createUserPassword') as HTMLInputElement;
+    const passwordToggle = document.getElementById('createUserPasswordToggle') as HTMLElement;
+
+    // Password reveal toggle works on the reopened dialog.
+    passwordToggle.dispatchEvent(new Event('click'));
+    expect(passwordInput.type).toBe('text');
+
+    // Submit posts to the admin endpoint with the typed values (handler bound to the live form).
+    apiFetchMock.mockClear();
+    emailInput.value = 'new@example.com';
+    nameInput.value = 'New User';
+    passwordInput.value = 'password1234';
+    const form = document.getElementById('createUserForm') as HTMLFormElement;
+    form.dispatchEvent(new Event('submit', { cancelable: true }));
+    await flushPromises();
+
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/admin/users', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: 'new@example.com',
+        name: 'New User',
+        password: 'password1234',
+      }),
+    });
+    // Successful create closes and removes the dialog too.
+    expect(document.querySelectorAll('#createUserForm')).toHaveLength(0);
+    expect(dialog.isConnected).toBe(false);
+  });
+
   // ---- Backup / Trello --------------------------------------------------
 
   it('rebuilds backup preview/warnings from stored state on locale change while preserving import mode, REPLACE input, and making no API calls', async () => {

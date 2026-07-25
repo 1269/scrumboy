@@ -81,6 +81,12 @@ export function setPushStatus(status) {
 export function setSelfServicePasswordResetEnabled(enabled) {
     current._selfServicePasswordResetEnabled = enabled;
 }
+export function setEmailNotifyAvailable(available) {
+    current._emailNotifyAvailable = available;
+}
+export function setEmailNotifyPreferenceState(state) {
+    current.emailNotifyPreference = state;
+}
 export function setOidcEnabled(enabled) {
     current._oidcEnabled = enabled;
 }
@@ -213,6 +219,7 @@ export function resetUserScopedState() {
     current.openTodoSegment = null;
     current.settingsProjectId = null;
     current._pushStatus = null;
+    current.emailNotifyPreference = { userId: null, status: 'idle', value: null };
     current.tagColors = {};
     current.backupData = undefined;
     current.backupPreview = undefined;

@@ -121,7 +121,7 @@ curl -sS -X POST 'https://YOUR_HOST/agora/v1/discover' \
   "result": {
     "tools": [
       {
-        "name": "system.getCapabilities",
+        "name": "system_getCapabilities",
         "description": "…",
         "inputSchema": { }
       }
@@ -144,7 +144,7 @@ Each tool is whatever MCP `tools/list` provides. The field name is **`inputSchem
 - **Method:** `POST`
 - **Header:** `Content-Type: application/json`
 - **Body:** JSON object with **exactly** these top-level fields for normal use:
-  - **`tool`** (string, required) — same name as in the catalog, e.g. `projects.list`
+  - **`tool`** (string, required) — same name as in the catalog, e.g. `projects_list`
   - **`arguments`** (required) — a JSON **object** for tool inputs, or the JSON value **`null`**, which the server treats like **`{}`** for the underlying call. Unknown top-level fields are **rejected** (strict decode).
 
 **Example**
@@ -153,7 +153,7 @@ Each tool is whatever MCP `tools/list` provides. The field name is **`inputSchem
 curl -sS -X POST 'https://YOUR_HOST/agora/v1/invoke' \
   -H 'Content-Type: application/json' \
   -H 'Cookie: scrumboy_session=YOUR_SESSION' \
-  -d '{"tool":"system.getCapabilities","arguments":{}}'
+  -d '{"tool":"system_getCapabilities","arguments":{}}'
 ```
 
 **Success `result`**
@@ -178,7 +178,7 @@ Always **`null`**, with **`error.message`** (and sometimes **`code` / `data`**) 
 
 5. **Do not assume** the adapter replaces MCP documentation for tool **input** validation—each tool’s **`inputSchema`** in discover describes allowed keys; the server may still return tool errors for bad inputs.
 
-6. For **integration listings**, align your static schema (e.g. `arguments: { "type": "object" }`) with the runtime rule that **JSON `null` for `arguments` is allowed** and normalized to an empty object.
+6. For **integration listings**, align your static schema with the runtime rule that **JSON `null` for `arguments` is allowed** and normalized to an empty object (see [`agoragentic-manifest.json`](examples/agoragentic-manifest.json): `arguments` as `anyOf` object or null).
 
 ---
 

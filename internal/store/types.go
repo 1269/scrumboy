@@ -128,16 +128,20 @@ type Project struct {
 	EstimationMode     string
 	DefaultSprintWeeks int
 	Slug               string
-	OwnerUserID        *int64 // NULL for unowned (e.g., temporary/share boards)
+	OwnerUserID        *int64 // NULL for unowned boards (Temporary and Anonymous Boards); set for Durable Projects
 	// CreatorUserID represents who created the project at creation time.
-	// This is immutable historical metadata, not a permission source.
-	// - NULL for anonymous temp boards (created without authentication)
-	// - Set for authenticated temp boards (created by logged-in user)
+	// This is immutable historical metadata, not a general permission source.
+	// - NULL for Anonymous Boards (created without an authenticated user)
+	// - Set for Temporary Boards (created by a signed-in user in Full Mode)
 	// - Once project sharing exists, the creator will be inserted as initial project maintainer
-	// - Do not use creator_user_id for authorization checks; use project_members instead
+	// - Do not use creator_user_id as a general authorization source; use project_members instead.
+	//   The ONLY exception is Temporary Board claiming (the Temporary -> Durable Project
+	//   conversion in ClaimTemporaryBoard): Temporary Board access does not depend on
+	//   ownership or membership, so the recorded creator authorizes the one-time conversion.
+	//   After conversion, access is governed by owner_user_id and project_members.
 	CreatorUserID  *int64
 	LastActivityAt time.Time  // NOT NULL in DB
-	ExpiresAt      *time.Time // NULL for full mode, set for anonymous mode
+	ExpiresAt      *time.Time // NULL for Durable Projects; set for Temporary and Anonymous Boards
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }

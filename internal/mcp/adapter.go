@@ -23,6 +23,10 @@ type storeAPI interface {
 	CreateTodo(ctx context.Context, projectID int64, in store.CreateTodoInput, mode store.Mode) (store.Todo, error)
 	GetTodoByLocalID(ctx context.Context, projectID, localID int64, mode store.Mode) (store.Todo, error)
 	SearchTodosForLinkPicker(ctx context.Context, projectID int64, q string, limit int, excludeLocalIDs []int64, mode store.Mode) ([]store.TodoLinkTarget, error)
+	AddLink(ctx context.Context, projectID, fromLocalID, toLocalID int64, linkType string, mode store.Mode) error
+	RemoveLink(ctx context.Context, projectID, fromLocalID, toLocalID int64, mode store.Mode) error
+	ListLinksForTodo(ctx context.Context, projectID, localID int64, mode store.Mode) ([]store.TodoLinkTarget, error)
+	ListBacklinksForTodo(ctx context.Context, projectID, localID int64, mode store.Mode) ([]store.TodoLinkTarget, error)
 	UpdateTodoByLocalID(ctx context.Context, projectID, localID int64, in store.UpdateTodoInput, mode store.Mode) (store.Todo, error)
 	DeleteTodoByLocalID(ctx context.Context, projectID, localID int64, mode store.Mode) error
 	MoveTodoByLocalID(ctx context.Context, projectID, localID int64, toColumnKey string, afterLocalID, beforeLocalID *int64, mode store.Mode) (store.Todo, error)
@@ -48,6 +52,9 @@ type storeAPI interface {
 	UpdateProjectMemberRole(ctx context.Context, requesterID, projectID, targetUserID int64, role store.ProjectRole) error
 	RemoveProjectMember(ctx context.Context, requesterID, projectID, targetUserID int64) error
 	GetProjectWorkflow(ctx context.Context, projectID int64) ([]store.WorkflowColumn, error)
+	AddWorkflowColumn(ctx context.Context, projectID int64, name string) (store.WorkflowColumn, error)
+	UpdateWorkflowColumn(ctx context.Context, projectID int64, key, name, color string) error
+	DeleteWorkflowColumn(ctx context.Context, projectID int64, key string) error
 	CountTodosForBoardLane(ctx context.Context, projectID int64, columnKey string, tagFilter string, searchFilter string, sprintFilter store.SprintFilter) (int, error)
 	UpdateBoardActivity(ctx context.Context, projectID int64) error
 }
@@ -216,34 +223,41 @@ func (a *Adapter) authState(ctx context.Context) (authCapabilities, bool, *adapt
 
 func (a *Adapter) implementedTools() []string {
 	return []string{
-		"system.getCapabilities",
-		"projects.list",
-		"todos.create",
-		"todos.get",
-		"todos.search",
-		"todos.update",
-		"todos.delete",
-		"todos.move",
-		"sprints.list",
-		"sprints.get",
-		"sprints.getActive",
-		"sprints.create",
-		"sprints.activate",
-		"sprints.close",
-		"sprints.update",
-		"sprints.delete",
-		"tags.listProject",
-		"tags.listMine",
-		"tags.updateMineColor",
-		"tags.deleteMine",
-		"tags.updateProjectColor",
-		"tags.deleteProject",
-		"members.list",
-		"members.listAvailable",
-		"members.add",
-		"members.updateRole",
-		"members.remove",
-		"board.get",
+		"system_getCapabilities",
+		"projects_list",
+		"todos_create",
+		"todos_get",
+		"todos_search",
+		"todos_update",
+		"todos_delete",
+		"todos_move",
+		"todos_linksList",
+		"todos_linkAdd",
+		"todos_linkRemove",
+		"sprints_list",
+		"sprints_get",
+		"sprints_getActive",
+		"sprints_create",
+		"sprints_activate",
+		"sprints_close",
+		"sprints_update",
+		"sprints_delete",
+		"tags_listProject",
+		"tags_listMine",
+		"tags_updateMineColor",
+		"tags_deleteMine",
+		"tags_updateProjectColor",
+		"tags_deleteProject",
+		"members_list",
+		"members_listAvailable",
+		"members_add",
+		"members_updateRole",
+		"members_remove",
+		"board_get",
+		"workflow_list",
+		"workflow_create",
+		"workflow_update",
+		"workflow_delete",
 	}
 }
 
