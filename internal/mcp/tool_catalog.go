@@ -283,6 +283,7 @@ func toolCatalogDefinitions() map[string]mcpToolDef {
 				"projectSlug": jsonProp("string", "Project identifier (slug)"),
 				"tag":         jsonProp("string", "Filter by tag"),
 				"search":      jsonProp("string", "Filter by search text"),
+				"assignee":    jsonProp("string", "Filter by assignee user ID, or \"unassigned\" for todos with no assignee"),
 				"sprintId":    jsonPropWithNull("integer", "Filter to a sprint"),
 				"limit":       jsonProp("integer", "Maximum items per column"),
 				"cursorByColumn": map[string]any{

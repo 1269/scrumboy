@@ -229,12 +229,13 @@ func (s *Server) handleProjectsProjectReads(w http.ResponseWriter, r *http.Reque
 		if search == "" {
 			search = ""
 		}
+		assignee := strings.TrimSpace(r.URL.Query().Get("assignee"))
 		sprintFilter, err := s.parseSprintFilterFromQuery(r, projectID)
 		if err != nil {
 			writeValidationError(w, err.Error(), "invalid_sprint_id", map[string]any{"field": "sprintId"})
 			return true
 		}
-		project, tags, workflow, cols, err := s.store.GetBoard(s.requestContext(r), &pc, tag, search, sprintFilter)
+		project, tags, workflow, cols, err := s.store.GetBoard(s.requestContext(r), &pc, tag, search, assignee, sprintFilter)
 		if err != nil {
 			writeStoreErr(w, err, true)
 			return true
