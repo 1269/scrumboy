@@ -212,6 +212,7 @@ func TestProjectLabels_ViewerColorSurvivesBackingRowRotation(t *testing.T) {
 	// A different member creates a brand-new backing row for the same canonical name.
 	ctx2 := WithUserID(ctx, u2.ID)
 	plNewTodo(t, st, ctx2, p.ID, "b", "bug")
+	bug2 := plTagRowID(t, st, "bug", u2.ID)
 
 	// u1's color preference must still resolve for "bug", even though it lives on a tag_id
 	// (bug1) that is no longer part of the listing's backing-row set.
@@ -222,6 +223,147 @@ func TestProjectLabels_ViewerColorSurvivesBackingRowRotation(t *testing.T) {
 	}
 	if bug.Color == nil || *bug.Color != color {
 		t.Errorf("expected u1's color preference %s to survive backing-row rotation, got %#v", color, bug.Color)
+	}
+
+	// A preference on the current row outranks the viewer-owned historical row.
+	currentColor := "#123456"
+	if _, err := st.db.ExecContext(ctx, `
+INSERT INTO user_tag_colors(user_id, tag_id, color) VALUES(?,?,?)`, u1.ID, bug2, currentColor); err != nil {
+		t.Fatalf("insert current-row color: %v", err)
+	}
+	tags, _ = st.listTagCounts(ctx1, p.ID, &u1.ID, nil, true)
+	if bug := plFindTag(tags, "bug"); bug == nil || bug.Color == nil || *bug.Color != currentColor {
+		t.Fatalf("expected current-row color %s to outrank historical color, got %#v", currentColor, bug)
+	}
+
+	// A later name-based write converges both the current and historical rows.
+	updatedColor := "#abcdef"
+	if err := st.SetViewerTagColorByName(ctx, p.ID, u1.ID, "bug", &updatedColor); err != nil {
+		t.Fatalf("update after backing-row rotation: %v", err)
+	}
+	tags, _ = st.listTagCounts(ctx1, p.ID, &u1.ID, nil, true)
+	if bug := plFindTag(tags, "bug"); bug == nil || bug.Color == nil || *bug.Color != updatedColor {
+		t.Fatalf("expected updated color %s after rotation, got %#v", updatedColor, bug)
+	}
+	var convergedRows int
+	if err := st.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM user_tag_colors
+WHERE user_id = ? AND tag_id IN (?, ?) AND color = ?`,
+		u1.ID, bug1, bug2, updatedColor).Scan(&convergedRows); err != nil {
+		t.Fatalf("count converged color rows: %v", err)
+	}
+	if convergedRows != 2 {
+		t.Fatalf("expected both current and historical rows to converge, got %d", convergedRows)
+	}
+
+	// Clearing by name also reaches both rows, so the historical preference cannot
+	// immediately resurface.
+	if err := st.SetViewerTagColorByName(ctx, p.ID, u1.ID, "bug", nil); err != nil {
+		t.Fatalf("clear after backing-row rotation: %v", err)
+	}
+	tags, _ = st.listTagCounts(ctx1, p.ID, &u1.ID, nil, true)
+	if bug := plFindTag(tags, "bug"); bug == nil || bug.Color != nil {
+		t.Fatalf("expected no viewer color after clear, got %#v", bug)
+	}
+	var remainingRows int
+	if err := st.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM user_tag_colors
+WHERE user_id = ? AND tag_id IN (?, ?)`, u1.ID, bug1, bug2).Scan(&remainingRows); err != nil {
+		t.Fatalf("count remaining color rows: %v", err)
+	}
+	if remainingRows != 0 {
+		t.Fatalf("expected clear to remove current and historical preferences, got %d", remainingRows)
+	}
+}
+
+func TestProjectLabels_ViewerColorIgnoresUnrelatedProjectRows(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	u1, _ := st.BootstrapUser(ctx, "u1@example.com", "password", "U1")
+	u2, _ := st.CreateUser(ctx, "u2@example.com", "password", "U2")
+	ctx1 := WithUserID(ctx, u1.ID)
+	ctx2 := WithUserID(ctx, u2.ID)
+	projectA, _ := st.CreateProject(ctx1, "A")
+	projectB, _ := st.CreateProject(ctx1, "B")
+	plAddMember(t, st, projectB.ID, u2.ID, RoleMaintainer)
+
+	// u1's viewer-owned "bug" row is associated only with Project A.
+	plNewTodo(t, st, ctx1, projectA.ID, "a", "bug")
+	bugA := plTagRowID(t, st, "bug", u1.ID)
+	colorA := "#aa0000"
+	if err := st.SetViewerTagColorByName(ctx, projectA.ID, u1.ID, "bug", &colorA); err != nil {
+		t.Fatalf("set Project A color: %v", err)
+	}
+
+	// Project B is backed only by u2's separate personal row.
+	plNewTodo(t, st, ctx2, projectB.ID, "b", "bug")
+	bugB := plTagRowID(t, st, "bug", u2.ID)
+	tagsB, _ := st.listTagCounts(ctx1, projectB.ID, &u1.ID, nil, true)
+	if bug := plFindTag(tagsB, "bug"); bug == nil || bug.Color != nil {
+		t.Fatalf("unrelated Project A preference must not color Project B, got %#v", bug)
+	}
+
+	colorB := "#0000bb"
+	if err := st.SetViewerTagColorByName(ctx, projectB.ID, u1.ID, "bug", &colorB); err != nil {
+		t.Fatalf("set Project B color: %v", err)
+	}
+	tagsB, _ = st.listTagCounts(ctx1, projectB.ID, &u1.ID, nil, true)
+	if bug := plFindTag(tagsB, "bug"); bug == nil || bug.Color == nil || *bug.Color != colorB {
+		t.Fatalf("expected Project B color %s, got %#v", colorB, bug)
+	}
+	tagsA, _ := st.listTagCounts(ctx1, projectA.ID, &u1.ID, nil, true)
+	if bug := plFindTag(tagsA, "bug"); bug == nil || bug.Color == nil || *bug.Color != colorA {
+		t.Fatalf("Project B write must not change Project A color %s, got %#v", colorA, bug)
+	}
+
+	var storedA, storedB string
+	if err := st.db.QueryRowContext(ctx,
+		`SELECT color FROM user_tag_colors WHERE user_id = ? AND tag_id = ?`,
+		u1.ID, bugA).Scan(&storedA); err != nil {
+		t.Fatalf("read Project A stored color: %v", err)
+	}
+	if err := st.db.QueryRowContext(ctx,
+		`SELECT color FROM user_tag_colors WHERE user_id = ? AND tag_id = ?`,
+		u1.ID, bugB).Scan(&storedB); err != nil {
+		t.Fatalf("read Project B stored color: %v", err)
+	}
+	if storedA != colorA || storedB != colorB {
+		t.Fatalf("expected isolated stored colors A=%s B=%s, got A=%s B=%s", colorA, colorB, storedA, storedB)
+	}
+}
+
+func TestProjectLabels_HistoricalPersonalColorDoesNotOverridePureBoardGroup(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	u1, _ := st.BootstrapUser(ctx, "u1@example.com", "password", "U1")
+	ctx1 := WithUserID(ctx, u1.ID)
+	p, _ := st.CreateProject(ctx1, "P")
+
+	// Leave a personal preference in the project's history, but remove its row from
+	// the current personal backing set.
+	plNewTodo(t, st, ctx1, p.ID, "a", "bug")
+	personalBug := plTagRowID(t, st, "bug", u1.ID)
+	personalColor := "#aa0000"
+	if err := st.SetViewerTagColorByName(ctx, p.ID, u1.ID, "bug", &personalColor); err != nil {
+		t.Fatalf("set personal color: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `DELETE FROM todo_tags WHERE tag_id = ?`, personalBug); err != nil {
+		t.Fatalf("untag personal bug: %v", err)
+	}
+
+	// Once the visible group is pure board-scoped, its shared color is authoritative.
+	boardColor := "#00bb00"
+	boardBug := plInsertBoardScopedTag(t, st, p.ID, "bug", &boardColor)
+	tags, _ := st.listTagCounts(ctx1, p.ID, &u1.ID, nil, true)
+	bug := plFindTag(tags, "bug")
+	if bug == nil || bug.TagID != boardBug || bug.Color == nil || *bug.Color != boardColor {
+		t.Fatalf("expected pure board-scoped color %s, got %#v", boardColor, bug)
 	}
 }
 

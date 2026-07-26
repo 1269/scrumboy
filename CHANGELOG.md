@@ -2,6 +2,12 @@
 
 > **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.26.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags) - see those releases.
 
+## [3.26.3] - 2026-07-26
+
+### Fixed
+
+- **Grouped-tag viewer colors could silently revert (PR #186)** - If every personal row backing a canonical name stopped being used while another member's same-named row became the current backing row, the viewer's stored color could become unreachable. Durable project listings now fall back to historical personal rows linked to that same project, without allowing unrelated projects or pure board-scoped groups to override the current project. Later set and clear operations converge all same-project linked personal rows so stale preferences cannot resurface.
+
 ## [3.26.2] - 2026-07-26
 
 ### Added
@@ -12,12 +18,6 @@
   - **Burndown / backlog-size metrics** - `metrics_getBurndown` (optionally sprint-scoped via `sprintId`) and `metrics_getBacklogSize` wrap the same store queries behind the existing REST burndown/backlog-size endpoints.
   - **Admin user management** - `admin_listUsers` (owner/admin), `admin_updateUserRole`, `admin_deleteUser` (owner only). `admin_updateUserRole` deliberately does not expose promotion to `owner`, matching the REST admin API.
   - See [API.md](API.md) for full input/output shapes.
-
-## [3.26.2] - 2026-07-26
-
-### Fixed
-
-- **Grouped-tag viewer colors could silently revert (#173)** - `SetViewerTagColorByName` writes a viewer's color preference onto whichever personal backing row(s) exist for a canonical name at write time. The grouped listing previously resolved that preference only from rows currently used by a todo in the project, so if every such row later stopped being used (e.g. the tag was removed from every todo carrying it) while a different member's row for the same canonical name became the sole backing row, the viewer's preference was orphaned and the color fell back to default with no user action. The grouped listing now resolves a viewer's color preference for a canonical name across all of the viewer's personal tag rows, independent of per-project usage, with the existing owned-row-then-lowest-id precedence preserved for ties.
 
 ## [3.26.1] - 2026-07-26
 
