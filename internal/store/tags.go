@@ -255,12 +255,11 @@ func tagWriteKey(name string) (string, error) {
 // tagRowMeta is one backing row for a canonical-name group, used to build the
 // grouped projection returned by listTagCounts.
 type tagRowMeta struct {
-	tagID       int64
-	name        string
-	userID      sql.NullInt64
-	projectID   sql.NullInt64
-	boardColor  sql.NullString // tags.color (shared board-scoped color)
-	viewerColor sql.NullString // user_tag_colors.color for the current viewer
+	tagID      int64
+	name       string
+	userID     sql.NullInt64
+	projectID  sql.NullInt64
+	boardColor sql.NullString // tags.color (shared board-scoped color)
 }
 
 // listTagCounts returns the project's tags for display.
@@ -452,40 +451,21 @@ WHERE t.project_id = ?`, projectID)
 
 	// Query B: one row per backing tag row that satisfies the read inclusion rule.
 	// Board-scoped rows are listed even when unused; personal rows only when used
-	// by a todo in the project. viewer_color is resolved in-query for the viewer.
-	var metaRows *sql.Rows
-	if viewerUserID != nil {
-		metaRows, err = s.db.QueryContext(ctx, `
-SELECT g.id, g.name, g.user_id, g.project_id, g.color, NULL AS viewer_color
+	// by a todo in the project.
+	metaRows, err := s.db.QueryContext(ctx, `
+SELECT g.id, g.name, g.user_id, g.project_id, g.color
 FROM tags g
 WHERE g.project_id = ? AND g.user_id IS NULL
 
 UNION ALL
 
-SELECT DISTINCT g.id, g.name, g.user_id, g.project_id, g.color, utc.color AS viewer_color
-FROM tags g
-JOIN todo_tags tt ON tt.tag_id = g.id
-JOIN todos t ON t.id = tt.todo_id AND t.project_id = ?
-LEFT JOIN user_tag_colors utc ON utc.tag_id = g.id AND utc.user_id = ?
-WHERE g.user_id IS NOT NULL
-
-ORDER BY id`, projectID, projectID, *viewerUserID)
-	} else {
-		metaRows, err = s.db.QueryContext(ctx, `
-SELECT g.id, g.name, g.user_id, g.project_id, g.color, NULL AS viewer_color
-FROM tags g
-WHERE g.project_id = ? AND g.user_id IS NULL
-
-UNION ALL
-
-SELECT DISTINCT g.id, g.name, g.user_id, g.project_id, g.color, NULL AS viewer_color
+SELECT DISTINCT g.id, g.name, g.user_id, g.project_id, g.color
 FROM tags g
 JOIN todo_tags tt ON tt.tag_id = g.id
 JOIN todos t ON t.id = tt.todo_id AND t.project_id = ?
 WHERE g.user_id IS NOT NULL
 
 ORDER BY id`, projectID, projectID)
-	}
 	if err != nil {
 		return nil, fmt.Errorf("list tag rows: %w", err)
 	}
@@ -497,7 +477,7 @@ ORDER BY id`, projectID, projectID)
 	var keyOrder []string
 	for metaRows.Next() {
 		var m tagRowMeta
-		if err := metaRows.Scan(&m.tagID, &m.name, &m.userID, &m.projectID, &m.boardColor, &m.viewerColor); err != nil {
+		if err := metaRows.Scan(&m.tagID, &m.name, &m.userID, &m.projectID, &m.boardColor); err != nil {
 			return nil, fmt.Errorf("scan tag row: %w", err)
 		}
 		key := TagGroupKey(m.name)
@@ -508,6 +488,17 @@ ORDER BY id`, projectID, projectID)
 	}
 	if err := metaRows.Err(); err != nil {
 		return nil, fmt.Errorf("rows tag rows: %w", err)
+	}
+
+	// Viewer color preferences, keyed by canonical name and resolved independently of
+	// which backing row is currently "used" in this project - see
+	// viewerPersonalTagColorPrefs for why that independence matters.
+	var viewerPrefs map[string]string
+	if viewerUserID != nil {
+		viewerPrefs, err = s.viewerPersonalTagColorPrefs(ctx, *viewerUserID)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	isMaintainer := viewerRole != nil && viewerRole.HasMinimumRole(RoleMaintainer)
@@ -529,7 +520,7 @@ ORDER BY id`, projectID, projectID)
 			// surface under the same name the write routes resolve.
 			Name:  key,
 			Count: len(todosByKey[key]),
-			Color: pickGroupedTagColor(rowsForName, viewerUserID),
+			Color: pickGroupedTagColor(rowsForName, viewerPrefs[key]),
 		}
 		if personal {
 			// Personal-label group (includes mixed board+personal): no representative tag_id.
@@ -557,24 +548,14 @@ ORDER BY id`, projectID, projectID)
 	return out, nil
 }
 
-// pickGroupedTagColor resolves the color for a grouped tag using deterministic,
-// viewer-scoped precedence: (1) the viewer's preference on a row the viewer owns,
-// (2) the viewer's preference on the lowest backing tag_id, (3) the board-scoped
-// shared color (mixed claimed-board groups), (4) nil. rows must be ordered by tag_id.
-func pickGroupedTagColor(rows []tagRowMeta, viewerUserID *int64) *string {
-	if viewerUserID != nil {
-		for _, r := range rows {
-			if r.userID.Valid && r.userID.Int64 == *viewerUserID && r.viewerColor.Valid && r.viewerColor.String != "" {
-				c := r.viewerColor.String
-				return &c
-			}
-		}
-	}
-	for _, r := range rows {
-		if r.viewerColor.Valid && r.viewerColor.String != "" {
-			c := r.viewerColor.String
-			return &c
-		}
+// pickGroupedTagColor resolves the color for a grouped tag using deterministic
+// precedence: (1) the viewer's preference for this canonical name (already resolved
+// with viewer-owned-row-wins precedence by viewerPersonalTagColorPrefs), (2) the
+// board-scoped shared color (mixed claimed-board groups), (3) nil.
+func pickGroupedTagColor(rows []tagRowMeta, viewerPref string) *string {
+	if viewerPref != "" {
+		c := viewerPref
+		return &c
 	}
 	for _, r := range rows {
 		if !r.userID.Valid && r.boardColor.Valid && r.boardColor.String != "" {
@@ -583,6 +564,61 @@ func pickGroupedTagColor(rows []tagRowMeta, viewerUserID *int64) *string {
 		}
 	}
 	return nil
+}
+
+// viewerPersonalTagColorPrefs returns every color preference the viewer has set on a
+// user-owned tag row, keyed by canonical name (TagGroupKey), regardless of whether that
+// row is currently used by a todo in any particular project.
+//
+// This must NOT be scoped to "rows used in project", unlike personalTagRowsForName:
+// SetViewerTagColorByName writes the preference onto whichever backing rows exist for a
+// name at the time of the write, keyed by tag_id. If every row backing a name later
+// stops being used (e.g. the tag is removed from every todo carrying it) while a new
+// row for the same canonical name appears later (e.g. a different member tags something
+// with it for the first time), a lookup restricted to "currently used" rows would never
+// find the older row's preference, and the color would silently revert to default. Since
+// the preference is conceptually about the canonical name, not any one physical row, this
+// looks across all of the viewer's rows for that name.
+//
+// Ties (multiple rows behind one name with different stored colors) prefer a row the
+// viewer owns, then the lowest tag_id - the same precedence pickGroupedTagColor used to
+// apply directly. Rows must be scanned in tag_id order for that precedence to hold.
+func (s *Store) viewerPersonalTagColorPrefs(ctx context.Context, viewerUserID int64) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT g.id, g.name, g.user_id, utc.color
+FROM user_tag_colors utc
+JOIN tags g ON g.id = utc.tag_id
+WHERE utc.user_id = ? AND g.user_id IS NOT NULL AND utc.color IS NOT NULL AND utc.color != ''
+ORDER BY g.id`, viewerUserID)
+	if err != nil {
+		return nil, fmt.Errorf("list viewer tag color prefs: %w", err)
+	}
+	defer rows.Close()
+
+	prefs := make(map[string]string)
+	owned := make(map[string]bool)
+	for rows.Next() {
+		var tagID, ownerID int64
+		var name, color string
+		if err := rows.Scan(&tagID, &name, &ownerID, &color); err != nil {
+			return nil, fmt.Errorf("scan viewer tag color pref: %w", err)
+		}
+		key := TagGroupKey(name)
+		if ownerID == viewerUserID {
+			if !owned[key] {
+				prefs[key] = color
+				owned[key] = true
+			}
+			continue
+		}
+		if owned[key] {
+			continue
+		}
+		if _, exists := prefs[key]; !exists {
+			prefs[key] = color
+		}
+	}
+	return prefs, rows.Err()
 }
 
 type TagWithColor struct {

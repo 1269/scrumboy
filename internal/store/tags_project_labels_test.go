@@ -169,6 +169,62 @@ func TestProjectLabels_LegacyConflictingViewerColorsResolveDeterministically(t *
 	}
 }
 
+// TestProjectLabels_ViewerColorSurvivesBackingRowRotation is the regression test for a
+// silently-dropped color preference (issue #173, review comment 2): a viewer's color is
+// written onto whichever backing row(s) exist for a canonical name at write time. If
+// that row later falls out of the project's "used by a todo" read-inclusion set (e.g.
+// the tag is removed from every todo carrying it) while a different member's row for the
+// same canonical name becomes the sole backing row, the viewer's preference must still
+// resolve for that name - not silently revert to no color just because the specific row
+// it was recorded against is no longer part of the listing.
+func TestProjectLabels_ViewerColorSurvivesBackingRowRotation(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	u1, _ := st.BootstrapUser(ctx, "u1@example.com", "password", "U1")
+	u2, _ := st.CreateUser(ctx, "u2@example.com", "password", "U2")
+	ctx1 := WithUserID(ctx, u1.ID)
+	p, _ := st.CreateProject(ctx1, "P")
+	plAddMember(t, st, p.ID, u2.ID, RoleMaintainer)
+
+	// u1 tags a todo with "bug", creating u1's personal backing row, and sets a color.
+	plNewTodo(t, st, ctx1, p.ID, "a", "bug")
+	bug1 := plTagRowID(t, st, "bug", u1.ID)
+	color := "#654321"
+	if err := st.SetViewerTagColorByName(ctx, p.ID, u1.ID, "bug", &color); err != nil {
+		t.Fatalf("SetViewerTagColorByName: %v", err)
+	}
+	tags, _ := st.listTagCounts(ctx1, p.ID, &u1.ID, nil, true)
+	if bug := plFindTag(tags, "bug"); bug == nil || bug.Color == nil || *bug.Color != color {
+		t.Fatalf("expected initial color %s, got %#v", color, bug)
+	}
+
+	// u1's row stops being used in the project (untagged from its only todo), so it
+	// drops out of the grouped listing's read-inclusion set entirely.
+	if _, err := st.db.ExecContext(ctx, `DELETE FROM todo_tags WHERE tag_id = ?`, bug1); err != nil {
+		t.Fatalf("untag bug1: %v", err)
+	}
+	if tags, _ := st.listTagCounts(ctx1, p.ID, &u1.ID, nil, true); plFindTag(tags, "bug") != nil {
+		t.Fatalf("expected 'bug' to disappear once its only backing row is unused, got %#v", tags)
+	}
+
+	// A different member creates a brand-new backing row for the same canonical name.
+	ctx2 := WithUserID(ctx, u2.ID)
+	plNewTodo(t, st, ctx2, p.ID, "b", "bug")
+
+	// u1's color preference must still resolve for "bug", even though it lives on a tag_id
+	// (bug1) that is no longer part of the listing's backing-row set.
+	tags, _ = st.listTagCounts(ctx1, p.ID, &u1.ID, nil, true)
+	bug := plFindTag(tags, "bug")
+	if bug == nil {
+		t.Fatalf("expected 'bug' to reappear via u2's new row, got %#v", tags)
+	}
+	if bug.Color == nil || *bug.Color != color {
+		t.Errorf("expected u1's color preference %s to survive backing-row rotation, got %#v", color, bug.Color)
+	}
+}
+
 func TestProjectLabels_NonOwnerCanSetColorByNameWithoutAffectingOthers(t *testing.T) {
 	st, cleanup := newTestStore(t)
 	defer cleanup()

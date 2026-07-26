@@ -2,6 +2,12 @@
 
 > **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.24.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags) - see those releases.
 
+## [3.26.2] - 2026-07-26
+
+### Fixed
+
+- **Grouped-tag viewer colors could silently revert (#173)** - `SetViewerTagColorByName` writes a viewer's color preference onto whichever personal backing row(s) exist for a canonical name at write time. The grouped listing previously resolved that preference only from rows currently used by a todo in the project, so if every such row later stopped being used (e.g. the tag was removed from every todo carrying it) while a different member's row for the same canonical name became the sole backing row, the viewer's preference was orphaned and the color fell back to default with no user action. The grouped listing now resolves a viewer's color preference for a canonical name across all of the viewer's personal tag rows, independent of per-project usage, with the existing owned-row-then-lowest-id precedence preserved for ties.
+
 ## [3.26.1] - 2026-07-26
 
 ### Fixed
