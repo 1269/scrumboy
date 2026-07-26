@@ -2,6 +2,12 @@
 
 > **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.26.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags) - see those releases.
 
+## [3.26.3] - 2026-07-26
+
+### Fixed
+
+- **Grouped-tag viewer colors could silently revert (PR #186)** - If every personal row backing a canonical name stopped being used while another member's same-named row became the current backing row, the viewer's stored color could become unreachable. Durable project listings now fall back to historical personal rows linked to that same project, without allowing unrelated projects or pure board-scoped groups to override the current project. Later set and clear operations converge all same-project linked personal rows so stale preferences cannot resurface.
+
 ## [3.26.2] - 2026-07-26
 
 ### Added
