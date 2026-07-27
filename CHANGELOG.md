@@ -2,6 +2,12 @@
 
 > **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.28.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags) - see those releases.
 
+## [3.28.2] - 2026-07-27
+
+### Changed
+
+- **Activity email copy is reason-specific** - Opt-in board activity emails no longer use a generic "activity update" subject/body. Each mapped `board.refresh_needed` reason gets its own subject phrase (e.g. `card moved`, `sprint closed`) and body copy that names the actor when known (`Alex moved a card in …`), with a passive fallback when no display name is available. Actor names prefer the membership list join and fall back to `GetUser` for signed-in temporary-board link visitors who are not project members. Unauthenticated anonymous visitors still produce no activity email (`actorUserId` unset).
+
 ## [3.28.1] - 2026-07-27
 
 ### Fixed
