@@ -202,9 +202,26 @@ func (n *emailNotifier) handleActivity(ctx context.Context, projectID int64, rea
 		return
 	}
 
+	// Prefer the actor name already joined into ListProjectMembers. Fall back to
+	// GetUser only when the actor is absent from members (Temporary Boards bypass
+	// role checks, so a signed-in link visitor can act without a membership row).
 	action := info.passive
-	if actor, err := n.store.GetUser(ctx, actorUserID); err == nil && actor.Name != "" {
-		action = actor.Name + " " + info.actorLed
+	actorName := ""
+	actorInMembers := false
+	for _, m := range members {
+		if m.UserID == actorUserID {
+			actorInMembers = true
+			actorName = m.Name
+			break
+		}
+	}
+	if !actorInMembers {
+		if actor, err := n.store.GetUser(ctx, actorUserID); err == nil {
+			actorName = actor.Name
+		}
+	}
+	if actorName != "" {
+		action = actorName + " " + info.actorLed
 	}
 
 	subject := fmt.Sprintf("%s: %s", proj.Name, info.subject)
