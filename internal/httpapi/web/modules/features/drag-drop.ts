@@ -14,6 +14,8 @@ export let dragInProgress = false;
 export let dragJustEnded = false;
 let moveInFlight = false;
 let activeSortables: any[] = [];
+let dragDropGeneration = 0;
+let dragJustEndedTimer: ReturnType<typeof setTimeout> | null = null;
 let boardColumns: Array<{ key: string; title: string; color?: string }> = columnsSpec();
 let mobileTabIntroGlowTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -66,6 +68,23 @@ function updateCardColorOptimistic(card: Element, targetKey: string, targetColor
 function setMobileDragging(active: boolean): void {
   const wrapper = document.querySelector(".mobile-board-wrapper");
   if (wrapper) wrapper.classList.toggle("dragging", active);
+}
+
+function clearPostDragClickSuppression(): void {
+  if (dragJustEndedTimer != null) {
+    clearTimeout(dragJustEndedTimer);
+    dragJustEndedTimer = null;
+  }
+  dragJustEnded = false;
+}
+
+function suppressPostDragClick(): void {
+  clearPostDragClickSuppression();
+  dragJustEnded = true;
+  dragJustEndedTimer = setTimeout(() => {
+    dragJustEndedTimer = null;
+    dragJustEnded = false;
+  }, 250);
 }
 
 function clearMobileTabIntroGlow(): void {
@@ -153,20 +172,29 @@ async function getFilteredLaneEndMove(status: string): Promise<{ afterId: number
 }
 
 export function initDnD(): void {
-  clearMobileTabIntroGlow();
+  const cancelledActiveDrag = dragInProgress;
+  const generation = ++dragDropGeneration;
+  const chronological = isChronologicalSortActive();
   // Destroy previous instances to prevent duplicate handlers
   for (const s of activeSortables) {
     try { s.destroy(); } catch (_) { /* element may already be removed */ }
   }
   activeSortables = [];
+  clearMobileTabIntroGlow();
+  setMobileDragging(false);
+  dragInProgress = false;
+  if (cancelledActiveDrag) suppressPostDragClick();
 
   const group = "board";
-  const chronological = isChronologicalSortActive();
+  const callbackIsCurrent = () =>
+    generation === dragDropGeneration
+    && chronological === isChronologicalSortActive();
 
   const handleEnd = async (evt: any) => {
+    if (!callbackIsCurrent()) return;
+
     dragInProgress = false;
-    dragJustEnded = true;
-    setTimeout(() => { dragJustEnded = false; }, 250);
+    suppressPostDragClick();
     clearMobileTabIntroGlow();
     setMobileDragging(false);
 
@@ -185,12 +213,15 @@ export function initDnD(): void {
       if (!toStatus) return;
 
       const fromStatus = evt.from?.getAttribute("data-status");
+      const sameLane = evt.from === evt.to || (fromStatus != null && fromStatus === toStatus);
+      if (chronological && sameLane) return;
+
       const isTabDrop = !!list.closest("#mobileTabDropZones");
       const filteredSubsetActive = hasActiveBoardSubsetFilter();
 
       let afterId: number | null = null;
       let beforeId: number | null = null;
-      if (isChronologicalSortActive()) {
+      if (chronological) {
         // Chronological DOM neighbors are not valid manual-rank anchors: a
         // cross-lane drop always appends to the end of the target lane's
         // rank order instead. Same-lane reordering is disabled via the
@@ -206,6 +237,8 @@ export function initDnD(): void {
           beforeId = await getHiddenLaneBoundaryLocalId(toStatus);
         }
       }
+
+      if (!callbackIsCurrent()) return;
 
       // No-op: dropped in the same position it started
       if (!isTabDrop && evt.from === evt.to && evt.oldIndex === evt.newIndex) return;
@@ -259,8 +292,10 @@ export function initDnD(): void {
       delay: 100,
       delayOnTouchOnly: true,
       onStart: () => {
+        if (!callbackIsCurrent()) return;
+
+        clearPostDragClickSuppression();
         dragInProgress = true;
-        dragJustEnded = false;
         setMobileDragging(true);
         startMobileTabIntroGlow();
         recordBoardInteraction();

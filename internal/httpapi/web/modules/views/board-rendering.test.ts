@@ -118,6 +118,9 @@ describe('board topbar rendering', () => {
       tags: [],
     };
 
-    expect(renderTodoCard(todo)).toContain('card__drag-handle');
+    const html = renderTodoCard(todo);
+    expect(html).toContain('card__drag-handle');
+    expect(html).toContain('aria-label="Drag card"');
+    expect(html).toContain('data-i18n-aria-label="board.todo.dragCard"');
   });
 });
