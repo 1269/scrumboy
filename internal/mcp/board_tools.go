@@ -58,7 +58,14 @@ func (a *Adapter) handleBoardGet(ctx context.Context, input any) (any, map[strin
 	// displayed name (so a "make space" chip is not rewritten to "make-space").
 	tag := strings.TrimSpace(in.Tag)
 	search := strings.TrimSpace(in.Search)
-	assignee := strings.TrimSpace(in.Assignee)
+	actorUserID, ok := store.UserIDFromContext(ctx)
+	if !ok {
+		return nil, nil, newAdapterError(http.StatusUnauthorized, CodeAuthRequired, "Sign-in required for this tool", nil)
+	}
+	assigneeFilter, assigneeErr := store.ParseAssigneeFilter(in.Assignee, &actorUserID)
+	if assigneeErr != nil {
+		return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid assignee", map[string]any{"field": "assignee"})
+	}
 
 	pc, pcErr := a.store.GetProjectContextBySlug(ctx, in.ProjectSlug, a.storeMode())
 	if pcErr != nil {
@@ -106,11 +113,11 @@ func (a *Adapter) handleBoardGet(ctx context.Context, input any) (any, map[strin
 			afterID = id
 		}
 
-		todos, _, hasMore, listErr := a.store.ListTodosForBoardLane(ctx, pc.Project.ID, col.Key, limit, afterRank, afterID, tag, search, assignee, sprintFilter)
+		todos, _, hasMore, listErr := a.store.ListTodosForBoardLane(ctx, pc.Project.ID, col.Key, limit, afterRank, afterID, tag, search, assigneeFilter, sprintFilter)
 		if listErr != nil {
 			return nil, nil, mapStoreError(listErr)
 		}
-		totalCount, countErr := a.store.CountTodosForBoardLane(ctx, pc.Project.ID, col.Key, tag, search, assignee, sprintFilter)
+		totalCount, countErr := a.store.CountTodosForBoardLane(ctx, pc.Project.ID, col.Key, tag, search, assigneeFilter, sprintFilter)
 		if countErr != nil {
 			return nil, nil, mapStoreError(countErr)
 		}

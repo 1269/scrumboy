@@ -35,7 +35,7 @@ func flushLane(key string, page []Todo, laneTotal, limitPerLane int, cols map[st
 
 // getBoardPagedPerLane is the fallback when totalTodos exceeds boardTodoSoftCap.
 // tagFilter must already be resolved for this request (no per-lane re-scan).
-func (s *Store) getBoardPagedPerLane(ctx context.Context, pc *ProjectContext, projectID int64, workflow []WorkflowColumn, tagFilter boardTagFilter, searchFilter string, assigneeFilter string, sprintFilter SprintFilter, limitPerLane int, tags []TagCount) (Project, []TagCount, []WorkflowColumn, map[string][]Todo, map[string]LaneMeta, error) {
+func (s *Store) getBoardPagedPerLane(ctx context.Context, pc *ProjectContext, projectID int64, workflow []WorkflowColumn, tagFilter boardTagFilter, searchFilter string, assigneeFilter AssigneeFilter, sprintFilter SprintFilter, limitPerLane int, tags []TagCount) (Project, []TagCount, []WorkflowColumn, map[string][]Todo, map[string]LaneMeta, error) {
 	cols := make(map[string][]Todo, len(workflow))
 	meta := make(map[string]LaneMeta, len(workflow))
 	for _, col := range workflow {
@@ -82,27 +82,29 @@ func sprintFilterArgs(sf SprintFilter) (cond string, args []any) {
 	}
 }
 
-// assigneeFilterArgs returns the SQL condition and args for a board assignee filter.
-// "" means no filter, "unassigned" matches todos with no assignee, and any other
-// value is parsed as a user ID to match exactly. Same placement contract as sprintFilterArgs.
-func assigneeFilterArgs(af string) (cond string, args []any) {
-	switch af {
-	case "":
+// assigneeFilterArgs returns the SQL condition and args for a validated board
+// assignee filter. Unknown internal states fail closed instead of widening the
+// query. Same placement contract as sprintFilterArgs.
+func assigneeFilterArgs(af AssigneeFilter) (cond string, args []any) {
+	switch af.mode {
+	case assigneeFilterNone:
 		return "", nil
-	case "unassigned":
+	case assigneeFilterUnassigned:
 		return " AND t.assignee_user_id IS NULL", nil
-	default:
-		if id, err := strconv.ParseInt(af, 10, 64); err == nil {
-			return " AND t.assignee_user_id = ?", []any{id}
+	case assigneeFilterUser:
+		if af.userID > 0 {
+			return " AND t.assignee_user_id = ?", []any{af.userID}
 		}
-		return "", nil
+		return " AND 1 = 0", nil
+	default:
+		return " AND 1 = 0", nil
 	}
 }
 
 // GetBoardPaged returns board with optional per-lane pagination. When limitPerLane > 0,
 // runs 5 lane queries and returns columnsMeta for each status. Otherwise same as GetBoard.
 // pc must be non-nil; use GetProjectContextBySlug or GetProjectContextForRead to obtain it.
-func (s *Store) GetBoardPaged(ctx context.Context, pc *ProjectContext, tagFilter string, searchFilter string, assigneeFilter string, sprintFilter SprintFilter, limitPerLane int) (Project, []TagCount, []WorkflowColumn, map[string][]Todo, map[string]LaneMeta, error) {
+func (s *Store) GetBoardPaged(ctx context.Context, pc *ProjectContext, tagFilter string, searchFilter string, assigneeFilter AssigneeFilter, sprintFilter SprintFilter, limitPerLane int) (Project, []TagCount, []WorkflowColumn, map[string][]Todo, map[string]LaneMeta, error) {
 	if limitPerLane <= 0 {
 		project, tags, workflow, cols, err := s.GetBoard(ctx, pc, tagFilter, searchFilter, assigneeFilter, sprintFilter)
 		return project, tags, workflow, cols, nil, err
@@ -184,7 +186,7 @@ func (s *Store) GetBoardPaged(ctx context.Context, pc *ProjectContext, tagFilter
 
 // GetBoard returns full board (all todos, no pagination).
 // pc must be non-nil; use GetProjectContextBySlug or GetProjectContextForRead to obtain it.
-func (s *Store) GetBoard(ctx context.Context, pc *ProjectContext, tagFilter string, searchFilter string, assigneeFilter string, sprintFilter SprintFilter) (Project, []TagCount, []WorkflowColumn, map[string][]Todo, error) {
+func (s *Store) GetBoard(ctx context.Context, pc *ProjectContext, tagFilter string, searchFilter string, assigneeFilter AssigneeFilter, sprintFilter SprintFilter) (Project, []TagCount, []WorkflowColumn, map[string][]Todo, error) {
 	projectID := pc.Project.ID
 	var viewerUserID *int64
 	if userID, ok := UserIDFromContext(ctx); ok {
@@ -235,7 +237,7 @@ func (s *Store) GetBoard(ctx context.Context, pc *ProjectContext, tagFilter stri
 
 // listAllTodosForBoard fetches all todos for a board in a single query
 // OPTIMIZED: Single query instead of 5 separate queries (one per status)
-func (s *Store) listAllTodosForBoard(ctx context.Context, projectID int64, tagFilter boardTagFilter, searchFilter string, assigneeFilter string, sprintFilter SprintFilter) ([]Todo, error) {
+func (s *Store) listAllTodosForBoard(ctx context.Context, projectID int64, tagFilter boardTagFilter, searchFilter string, assigneeFilter AssigneeFilter, sprintFilter SprintFilter) ([]Todo, error) {
 	// Show ALL tags on todos (no user filter - collaboration-friendly)
 	// Tag filter matches by resolved backing tag IDs
 
@@ -353,9 +355,9 @@ ORDER BY t.column_key ASC, t.rank ASC, t.id ASC
 	return out, nil
 }
 
-// countTodosForBoard returns the count of todos matching board filters (tag, search, sprint).
+// countTodosForBoard returns the count of todos matching board filters (tag, search, assignee, sprint).
 // Used for soft cap check; must mirror filters used by listAllTodosForBoardWithCounts.
-func (s *Store) countTodosForBoard(ctx context.Context, projectID int64, tagFilter boardTagFilter, searchFilter string, assigneeFilter string, sprintFilter SprintFilter) (int, error) {
+func (s *Store) countTodosForBoard(ctx context.Context, projectID int64, tagFilter boardTagFilter, searchFilter string, assigneeFilter AssigneeFilter, sprintFilter SprintFilter) (int, error) {
 	sprintCond, sprintArgs := sprintFilterArgs(sprintFilter)
 	assigneeCond, assigneeArgs := assigneeFilterArgs(assigneeFilter)
 	var count int
@@ -405,7 +407,7 @@ AND (? = '' OR LOWER(t.title) LIKE '%' || LOWER(?) || '%' OR LOWER(t.body) LIKE 
 
 // listAllTodosForBoardWithCounts fetches all todos with per-lane totals via window function.
 // Each row carries lane_total; no separate count query needed.
-func (s *Store) listAllTodosForBoardWithCounts(ctx context.Context, projectID int64, tagFilter boardTagFilter, searchFilter string, assigneeFilter string, sprintFilter SprintFilter) ([]todoWithLaneTotal, error) {
+func (s *Store) listAllTodosForBoardWithCounts(ctx context.Context, projectID int64, tagFilter boardTagFilter, searchFilter string, assigneeFilter AssigneeFilter, sprintFilter SprintFilter) ([]todoWithLaneTotal, error) {
 	sprintCond, sprintArgs := sprintFilterArgs(sprintFilter)
 	assigneeCond, assigneeArgs := assigneeFilterArgs(assigneeFilter)
 
@@ -524,7 +526,7 @@ ORDER BY t.column_key ASC, t.rank ASC, t.id ASC
 // Ordering contract: queries use "ORDER BY t.rank ASC, t.id ASC". The cursor tuple (rank, id)
 // MUST match that order; the predicate "(t.rank, t.id) > (?, ?)" continues after the last
 // returned row. If ORDER BY changes, pagination tests and cursor semantics must be updated together.
-func (s *Store) ListTodosForBoardLane(ctx context.Context, projectID int64, columnKey string, limit int, afterRank, afterID int64, tagFilter, searchFilter string, assigneeFilter string, sprintFilter SprintFilter) ([]Todo, string, bool, error) {
+func (s *Store) ListTodosForBoardLane(ctx context.Context, projectID int64, columnKey string, limit int, afterRank, afterID int64, tagFilter, searchFilter string, assigneeFilter AssigneeFilter, sprintFilter SprintFilter) ([]Todo, string, bool, error) {
 	// Exported entry point (lane pagination, MCP board tools): resolve once so the
 	// filter agrees with GetBoard for the same project scope.
 	p, err := s.getProject(ctx, projectID)
@@ -540,7 +542,7 @@ func (s *Store) ListTodosForBoardLane(ctx context.Context, projectID int64, colu
 
 // listTodosForBoardLaneResolved is the lane list helper that consumes a pre-resolved
 // tag filter (no project lookup, no tag-row scan).
-func (s *Store) listTodosForBoardLaneResolved(ctx context.Context, projectID int64, columnKey string, limit int, afterRank, afterID int64, tagFilter boardTagFilter, searchFilter string, assigneeFilter string, sprintFilter SprintFilter) ([]Todo, string, bool, error) {
+func (s *Store) listTodosForBoardLaneResolved(ctx context.Context, projectID int64, columnKey string, limit int, afterRank, afterID int64, tagFilter boardTagFilter, searchFilter string, assigneeFilter AssigneeFilter, sprintFilter SprintFilter) ([]Todo, string, bool, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -672,8 +674,9 @@ LIMIT ?
 	return out, "", false, nil
 }
 
-// CountTodosForBoardLane returns the total number of todos in the lane (same tag/search filters as ListTodosForBoardLane).
-func (s *Store) CountTodosForBoardLane(ctx context.Context, projectID int64, columnKey string, tagFilter string, searchFilter string, assigneeFilter string, sprintFilter SprintFilter) (int, error) {
+// CountTodosForBoardLane returns the total number of todos in the lane with the
+// same tag, search, assignee, and sprint filters as ListTodosForBoardLane.
+func (s *Store) CountTodosForBoardLane(ctx context.Context, projectID int64, columnKey string, tagFilter string, searchFilter string, assigneeFilter AssigneeFilter, sprintFilter SprintFilter) (int, error) {
 	p, err := s.getProject(ctx, projectID)
 	if err != nil {
 		return 0, err
@@ -687,7 +690,7 @@ func (s *Store) CountTodosForBoardLane(ctx context.Context, projectID int64, col
 
 // countTodosForBoardLaneResolved is the lane count helper that consumes a pre-resolved
 // tag filter (no project lookup, no tag-row scan).
-func (s *Store) countTodosForBoardLaneResolved(ctx context.Context, projectID int64, columnKey string, tagFilter boardTagFilter, searchFilter string, assigneeFilter string, sprintFilter SprintFilter) (int, error) {
+func (s *Store) countTodosForBoardLaneResolved(ctx context.Context, projectID int64, columnKey string, tagFilter boardTagFilter, searchFilter string, assigneeFilter AssigneeFilter, sprintFilter SprintFilter) (int, error) {
 	sprintCond, sprintArgs := sprintFilterArgs(sprintFilter)
 	assigneeCond, assigneeArgs := assigneeFilterArgs(assigneeFilter)
 

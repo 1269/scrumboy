@@ -2,9 +2,77 @@ package store
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"testing"
 )
+
+func mustAssigneeFilter(t *testing.T, raw string, actorUserID *int64) AssigneeFilter {
+	t.Helper()
+	filter, err := ParseAssigneeFilter(raw, actorUserID)
+	if err != nil {
+		t.Fatalf("ParseAssigneeFilter(%q): %v", raw, err)
+	}
+	return filter
+}
+
+func TestParseAssigneeFilter(t *testing.T) {
+	actorUserID := int64(42)
+	tests := []struct {
+		name        string
+		raw         string
+		actorUserID *int64
+		wantMode    assigneeFilterMode
+		wantUserID  int64
+		wantErr     bool
+	}{
+		{name: "empty", raw: "", wantMode: assigneeFilterNone},
+		{name: "whitespace only", raw: " \t ", wantMode: assigneeFilterNone},
+		{name: "unassigned", raw: "unassigned", wantMode: assigneeFilterUnassigned},
+		{name: "unassigned trims whitespace", raw: " unassigned ", wantMode: assigneeFilterUnassigned},
+		{name: "me", raw: "me", actorUserID: &actorUserID, wantMode: assigneeFilterUser, wantUserID: actorUserID},
+		{name: "me without actor", raw: "me", wantErr: true},
+		{name: "positive user id", raw: "42", wantMode: assigneeFilterUser, wantUserID: 42},
+		{name: "uppercase unassigned", raw: "Unassigned", wantErr: true},
+		{name: "uppercase me", raw: "Me", actorUserID: &actorUserID, wantErr: true},
+		{name: "zero", raw: "0", wantErr: true},
+		{name: "negative", raw: "-1", wantErr: true},
+		{name: "unknown sentinel", raw: "abc", wantErr: true},
+		{name: "overflow", raw: "9223372036854775808", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseAssigneeFilter(tc.raw, tc.actorUserID)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("ParseAssigneeFilter(%q) expected error, got %+v", tc.raw, got)
+				}
+				if err.Error() != "invalid assignee" {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseAssigneeFilter(%q): %v", tc.raw, err)
+			}
+			if got.mode != tc.wantMode || got.userID != tc.wantUserID {
+				t.Fatalf("ParseAssigneeFilter(%q) = %+v, want mode=%d userID=%d", tc.raw, got, tc.wantMode, tc.wantUserID)
+			}
+		})
+	}
+}
+
+func TestAssigneeFilterArgs_InvalidInternalStateFailsClosed(t *testing.T) {
+	cond, args := assigneeFilterArgs(AssigneeFilter{mode: assigneeFilterUser})
+	if cond != " AND 1 = 0" || len(args) != 0 {
+		t.Fatalf("invalid user filter returned cond=%q args=%v, want fail-closed condition", cond, args)
+	}
+	cond, args = assigneeFilterArgs(AssigneeFilter{mode: assigneeFilterMode(255)})
+	if cond != " AND 1 = 0" || len(args) != 0 {
+		t.Fatalf("unknown filter mode returned cond=%q args=%v, want fail-closed condition", cond, args)
+	}
+}
 
 func TestGetBoard_AssigneeFilter(t *testing.T) {
 	st, cleanup := newTestStore(t)
@@ -37,10 +105,10 @@ func TestGetBoard_AssigneeFilter(t *testing.T) {
 		t.Fatalf("AddProjectMember u2: %v", err)
 	}
 
-	if _, err := st.CreateTodo(ctxOwner, p.ID, CreateTodoInput{Title: "Assigned to u1", AssigneeUserID: ptrInt64(u1.ID)}, ModeFull); err != nil {
+	if _, err := st.CreateTodo(ctxOwner, p.ID, CreateTodoInput{Title: "Assigned to u1", Tags: []string{"focus"}, AssigneeUserID: ptrInt64(u1.ID)}, ModeFull); err != nil {
 		t.Fatalf("CreateTodo assigned u1: %v", err)
 	}
-	if _, err := st.CreateTodo(ctxOwner, p.ID, CreateTodoInput{Title: "Assigned to u2", AssigneeUserID: ptrInt64(u2.ID)}, ModeFull); err != nil {
+	if _, err := st.CreateTodo(ctxOwner, p.ID, CreateTodoInput{Title: "Assigned to u2", Tags: []string{"focus"}, AssigneeUserID: ptrInt64(u2.ID)}, ModeFull); err != nil {
 		t.Fatalf("CreateTodo assigned u2: %v", err)
 	}
 	if _, err := st.CreateTodo(ctxOwner, p.ID, CreateTodoInput{Title: "Unassigned"}, ModeFull); err != nil {
@@ -53,7 +121,8 @@ func TestGetBoard_AssigneeFilter(t *testing.T) {
 	}
 
 	t.Run("filters by specific assignee", func(t *testing.T) {
-		_, _, _, cols, err := st.GetBoard(ctxOwner, &pc, "", "", strconv.FormatInt(u1.ID, 10), SprintFilter{Mode: "none"})
+		filter := mustAssigneeFilter(t, strconv.FormatInt(u1.ID, 10), nil)
+		_, _, _, cols, err := st.GetBoard(ctxOwner, &pc, "", "", filter, SprintFilter{Mode: "none"})
 		if err != nil {
 			t.Fatalf("GetBoard: %v", err)
 		}
@@ -64,7 +133,8 @@ func TestGetBoard_AssigneeFilter(t *testing.T) {
 	})
 
 	t.Run("filters unassigned", func(t *testing.T) {
-		_, _, _, cols, err := st.GetBoard(ctxOwner, &pc, "", "", "unassigned", SprintFilter{Mode: "none"})
+		filter := mustAssigneeFilter(t, "unassigned", nil)
+		_, _, _, cols, err := st.GetBoard(ctxOwner, &pc, "", "", filter, SprintFilter{Mode: "none"})
 		if err != nil {
 			t.Fatalf("GetBoard: %v", err)
 		}
@@ -75,12 +145,54 @@ func TestGetBoard_AssigneeFilter(t *testing.T) {
 	})
 
 	t.Run("no filter returns all", func(t *testing.T) {
-		_, _, _, cols, err := st.GetBoard(ctxOwner, &pc, "", "", "", SprintFilter{Mode: "none"})
+		_, _, _, cols, err := st.GetBoard(ctxOwner, &pc, "", "", AssigneeFilter{}, SprintFilter{Mode: "none"})
 		if err != nil {
 			t.Fatalf("GetBoard: %v", err)
 		}
 		if len(cols[DefaultColumnBacklog]) != 3 {
 			t.Fatalf("expected 3 todos, got %d", len(cols[DefaultColumnBacklog]))
+		}
+	})
+
+	t.Run("paged path combines assignee tag and search", func(t *testing.T) {
+		filter := mustAssigneeFilter(t, strconv.FormatInt(u1.ID, 10), nil)
+		_, _, _, cols, meta, err := st.GetBoardPaged(ctxOwner, &pc, "focus", "u1", filter, SprintFilter{Mode: "none"}, 1)
+		if err != nil {
+			t.Fatalf("GetBoardPaged: %v", err)
+		}
+		todos := cols[DefaultColumnBacklog]
+		if len(todos) != 1 || todos[0].Title != "Assigned to u1" {
+			t.Fatalf("expected only 'Assigned to u1', got %+v", todos)
+		}
+		laneMeta := meta[DefaultColumnBacklog]
+		if laneMeta.TotalCount != 1 || laneMeta.HasMore {
+			t.Fatalf("unexpected filtered lane meta: %+v", laneMeta)
+		}
+	})
+
+	t.Run("paged path filters unassigned", func(t *testing.T) {
+		filter := mustAssigneeFilter(t, "unassigned", nil)
+		_, _, _, cols, meta, err := st.GetBoardPaged(ctxOwner, &pc, "", "", filter, SprintFilter{Mode: "none"}, 1)
+		if err != nil {
+			t.Fatalf("GetBoardPaged: %v", err)
+		}
+		todos := cols[DefaultColumnBacklog]
+		if len(todos) != 1 || todos[0].Title != "Unassigned" {
+			t.Fatalf("expected only 'Unassigned', got %+v", todos)
+		}
+		if got := meta[DefaultColumnBacklog].TotalCount; got != 1 {
+			t.Fatalf("unassigned total count = %d, want 1", got)
+		}
+	})
+
+	t.Run("unknown positive user id returns empty board", func(t *testing.T) {
+		filter := mustAssigneeFilter(t, strconv.FormatInt(math.MaxInt64, 10), nil)
+		_, _, _, cols, meta, err := st.GetBoardPaged(ctxOwner, &pc, "", "", filter, SprintFilter{Mode: "none"}, 1)
+		if err != nil {
+			t.Fatalf("GetBoardPaged: %v", err)
+		}
+		if len(cols[DefaultColumnBacklog]) != 0 || meta[DefaultColumnBacklog].TotalCount != 0 {
+			t.Fatalf("unknown user filter should return empty board, got cols=%+v meta=%+v", cols[DefaultColumnBacklog], meta[DefaultColumnBacklog])
 		}
 	})
 }
@@ -109,22 +221,43 @@ func TestListTodosForBoardLane_AssigneeFilter(t *testing.T) {
 		t.Fatalf("AddProjectMember u1: %v", err)
 	}
 
-	if _, err := st.CreateTodo(ctxOwner, p.ID, CreateTodoInput{Title: "Mine", AssigneeUserID: ptrInt64(u1.ID)}, ModeFull); err != nil {
-		t.Fatalf("CreateTodo mine: %v", err)
+	for _, title := range []string{"Mine 1", "Mine 2", "Mine 3"} {
+		if _, err := st.CreateTodo(ctxOwner, p.ID, CreateTodoInput{Title: title, AssigneeUserID: ptrInt64(u1.ID)}, ModeFull); err != nil {
+			t.Fatalf("CreateTodo %q: %v", title, err)
+		}
 	}
 	if _, err := st.CreateTodo(ctxOwner, p.ID, CreateTodoInput{Title: "Not mine"}, ModeFull); err != nil {
 		t.Fatalf("CreateTodo not mine: %v", err)
 	}
 
-	items, _, _, err := st.ListTodosForBoardLane(ctxOwner, p.ID, DefaultColumnBacklog, 20, 0, 0, "", "", strconv.FormatInt(u1.ID, 10), SprintFilter{Mode: "none"})
+	filter := mustAssigneeFilter(t, strconv.FormatInt(u1.ID, 10), nil)
+	items, cursor, hasMore, err := st.ListTodosForBoardLane(ctxOwner, p.ID, DefaultColumnBacklog, 2, math.MinInt64, 0, "", "", filter, SprintFilter{Mode: "none"})
 	if err != nil {
 		t.Fatalf("ListTodosForBoardLane: %v", err)
 	}
-	if len(items) != 1 || items[0].Title != "Mine" {
-		t.Fatalf("expected only 'Mine', got %+v", items)
+	if len(items) != 2 || !hasMore || cursor == "" {
+		t.Fatalf("expected two filtered items and another page, got items=%+v hasMore=%v cursor=%q", items, hasMore, cursor)
 	}
 
-	count, err := st.CountTodosForBoardLane(ctxOwner, p.ID, DefaultColumnBacklog, "", "", "unassigned", SprintFilter{Mode: "none"})
+	afterRank, afterID := ParseLaneCursor(cursor)
+	items, _, hasMore, err = st.ListTodosForBoardLane(ctxOwner, p.ID, DefaultColumnBacklog, 2, afterRank, afterID, "", "", filter, SprintFilter{Mode: "none"})
+	if err != nil {
+		t.Fatalf("ListTodosForBoardLane second page: %v", err)
+	}
+	if len(items) != 1 || hasMore || items[0].AssigneeUserID == nil || *items[0].AssigneeUserID != u1.ID {
+		t.Fatalf("unexpected second filtered page: items=%+v hasMore=%v", items, hasMore)
+	}
+
+	count, err := st.CountTodosForBoardLane(ctxOwner, p.ID, DefaultColumnBacklog, "", "", filter, SprintFilter{Mode: "none"})
+	if err != nil {
+		t.Fatalf("CountTodosForBoardLane assigned: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected 3 assigned todos, got %d", count)
+	}
+
+	unassignedFilter := mustAssigneeFilter(t, "unassigned", nil)
+	count, err = st.CountTodosForBoardLane(ctxOwner, p.ID, DefaultColumnBacklog, "", "", unassignedFilter, SprintFilter{Mode: "none"})
 	if err != nil {
 		t.Fatalf("CountTodosForBoardLane: %v", err)
 	}
