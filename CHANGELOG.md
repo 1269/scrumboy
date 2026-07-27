@@ -2,6 +2,12 @@
 
 > **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.28.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags) - see those releases.
 
+## [3.28.1] - 2026-07-27
+
+### Fixed
+
+- **Cross-lane drag disabled under chronological sort** - #3.28.0's "Chronological sort disables manual reorder" went further than intended: it hid the card drag handle entirely and skipped creating any Sortable instances, so cards couldn't be dragged to a *different* lane either, not just reordered within one. Manual-rank anchors derived from chronological DOM neighbors are still invalid, so same-lane reordering stays disabled (`Sortable`'s `sort: false`), but the drag handle is always rendered and cross-lane drops now go through, appending the card to the end of the target lane's rank order (`afterId`/`beforeId` both omitted) rather than trying to anchor off chronological neighbors.
+
 ## [3.28.0] - 2026-07-27
 
 ### Added

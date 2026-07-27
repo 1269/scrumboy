@@ -160,11 +160,8 @@ export function initDnD(): void {
   }
   activeSortables = [];
 
-  // Chronological DOM neighbors are not valid manual-rank anchors. Keep DnD
-  // completely disabled until the board returns to its default rank order.
-  if (isChronologicalSortActive()) return;
-
   const group = "board";
+  const chronological = isChronologicalSortActive();
 
   const handleEnd = async (evt: any) => {
     dragInProgress = false;
@@ -172,10 +169,6 @@ export function initDnD(): void {
     setTimeout(() => { dragJustEnded = false; }, 250);
     clearMobileTabIntroGlow();
     setMobileDragging(false);
-
-    // A sort can change while a stale Sortable callback is winding down.
-    // Never let that callback derive manual-rank anchors from chronological DOM.
-    if (isChronologicalSortActive()) return;
 
     recordBoardInteraction();
 
@@ -197,7 +190,12 @@ export function initDnD(): void {
 
       let afterId: number | null = null;
       let beforeId: number | null = null;
-      if (isTabDrop) {
+      if (isChronologicalSortActive()) {
+        // Chronological DOM neighbors are not valid manual-rank anchors: a
+        // cross-lane drop always appends to the end of the target lane's
+        // rank order instead. Same-lane reordering is disabled via the
+        // per-Sortable `sort: false` option set below.
+      } else if (isTabDrop) {
         if (filteredSubsetActive) {
           ({ afterId, beforeId } = await getFilteredLaneEndMove(toStatus));
         }
@@ -250,6 +248,7 @@ export function initDnD(): void {
     if (!el) return;
     activeSortables.push(Sortable.create(el, {
       group,
+      sort: !chronological,
       handle: ".card__drag-handle",
       animation: 150,
       ghostClass: "card--ghost",

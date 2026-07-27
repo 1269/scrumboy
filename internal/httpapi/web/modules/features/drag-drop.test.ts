@@ -137,34 +137,41 @@ describe("drag-drop i18n errors", () => {
   });
 
   it.each(["newest", "oldest"] as const)(
-    "does not create Sortable instances or requests for %s ordering",
+    "still creates Sortable instances for %s ordering, but with in-lane sorting disabled",
     async (sort) => {
       selectorState.sort = sort;
       const dragDrop = await import("./drag-drop.js");
 
       dragDrop.initDnD();
 
-      expect(sortableCreateMock).not.toHaveBeenCalled();
+      expect(sortableCreateMock).toHaveBeenCalledTimes(2);
+      const doingSortableCall = sortableCreateMock.mock.calls.find(([el]) => (el as HTMLElement).id === "list_doing");
+      if (!doingSortableCall) throw new Error("missing Sortable call for doing lane");
+      expect(doingSortableCall[1].sort).toBe(false);
       expect(apiFetchMock).not.toHaveBeenCalled();
     },
   );
 
-  it("destroys manual-order Sortable instances when chronological ordering becomes active", async () => {
+  it("re-creates Sortable instances with sort re-enabled when leaving chronological ordering", async () => {
+    selectorState.sort = "newest";
     const dragDrop = await import("./drag-drop.js");
     dragDrop.initDnD();
-    expect(sortableCreateMock).toHaveBeenCalledTimes(2);
     expect(sortableInstances).toHaveLength(2);
 
-    selectorState.sort = "newest";
+    selectorState.sort = null;
     sortableCreateMock.mockClear();
     dragDrop.initDnD();
 
     expect(sortableInstances[0].destroy).toHaveBeenCalledTimes(1);
     expect(sortableInstances[1].destroy).toHaveBeenCalledTimes(1);
-    expect(sortableCreateMock).not.toHaveBeenCalled();
+    const doingSortableCall = sortableCreateMock.mock.calls.find(([el]) => (el as HTMLElement).id === "list_doing");
+    if (!doingSortableCall) throw new Error("missing Sortable call for doing lane");
+    expect(doingSortableCall[1].sort).toBe(true);
   });
 
-  it("blocks a stale manual-order onEnd callback after chronological ordering is selected", async () => {
+  it("still allows a cross-lane drop while chronological ordering is active, appending to the end of the target lane", async () => {
+    selectorState.sort = "oldest";
+    apiFetchMock.mockResolvedValue({});
     const dragDrop = await import("./drag-drop.js");
     dragDrop.initDnD();
 
@@ -180,7 +187,6 @@ describe("drag-drop i18n errors", () => {
     const doingSortableCall = sortableCreateMock.mock.calls.find(([el]) => (el as HTMLElement).id === "list_doing");
     if (!doingSortableCall) throw new Error("missing Sortable call for doing lane");
 
-    selectorState.sort = "oldest";
     await doingSortableCall[1].onEnd({
       item,
       to: list,
@@ -189,7 +195,11 @@ describe("drag-drop i18n errors", () => {
       newIndex: 1,
     });
 
-    expect(apiFetchMock).not.toHaveBeenCalled();
-    expect(invalidateBoardMock).not.toHaveBeenCalled();
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      "/api/board/alpha/todos/12/move",
+      expect.objectContaining({
+        body: JSON.stringify({ toStatus: "doing", afterId: null, beforeId: null }),
+      }),
+    );
   });
 });
