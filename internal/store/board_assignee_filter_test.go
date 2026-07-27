@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func mustAssigneeFilter(t *testing.T, raw string, actorUserID *int64) AssigneeFilter {
@@ -263,5 +264,180 @@ func TestListTodosForBoardLane_AssigneeFilter(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected 1 unassigned todo, got %d", count)
+	}
+}
+
+func TestGetBoardPaged_AssigneeFilterSoftCapFallback(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	owner, err := st.BootstrapUser(ctx, "assignee-soft-cap-owner@example.com", "password", "Owner")
+	if err != nil {
+		t.Fatalf("BootstrapUser: %v", err)
+	}
+	ctxOwner := WithUserID(ctx, owner.ID)
+
+	p, err := st.CreateProject(ctxOwner, "p")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	matchingUser, err := st.CreateUser(ctx, "assignee-soft-cap-match@example.com", "password", "Matching")
+	if err != nil {
+		t.Fatalf("CreateUser matching: %v", err)
+	}
+	if err := st.AddProjectMember(ctxOwner, owner.ID, p.ID, matchingUser.ID, RoleMaintainer); err != nil {
+		t.Fatalf("AddProjectMember matching: %v", err)
+	}
+	otherUser, err := st.CreateUser(ctx, "assignee-soft-cap-other@example.com", "password", "Other")
+	if err != nil {
+		t.Fatalf("CreateUser other: %v", err)
+	}
+	if err := st.AddProjectMember(ctxOwner, owner.ID, p.ID, otherUser.ID, RoleMaintainer); err != nil {
+		t.Fatalf("AddProjectMember other: %v", err)
+	}
+
+	tx, err := st.db.BeginTx(ctxOwner, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctxOwner, `
+INSERT INTO todos(project_id, local_id, title, body, column_key, rank, estimation_points, assignee_user_id, sprint_id, created_at, updated_at, done_at)
+VALUES (?, ?, ?, '', ?, ?, NULL, ?, NULL, ?, ?, NULL)`)
+	if err != nil {
+		t.Fatalf("PrepareContext: %v", err)
+	}
+	defer stmt.Close()
+
+	nowMs := time.Now().UTC().UnixMilli()
+	nextLocalID := int64(1)
+	insertTodo := func(title string, rank int64, assigneeUserID int64) {
+		t.Helper()
+		if _, err := stmt.ExecContext(ctxOwner, p.ID, nextLocalID, title, DefaultColumnBacklog, rank, assigneeUserID, nowMs, nowMs); err != nil {
+			t.Fatalf("insert todo local_id=%d: %v", nextLocalID, err)
+		}
+		nextLocalID++
+	}
+	for i := 0; i < boardTodoSoftCap+1; i++ {
+		if i < 3 {
+			insertTodo("Other assignee", int64(i)*10+5, otherUser.ID)
+		}
+		insertTodo("Matching assignee", int64(i)*10+10, matchingUser.ID)
+	}
+	if err := stmt.Close(); err != nil {
+		t.Fatalf("close insert statement: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit todos: %v", err)
+	}
+
+	pc, err := st.GetProjectContextForRead(ctxOwner, p.ID, ModeFull)
+	if err != nil {
+		t.Fatalf("GetProjectContextForRead: %v", err)
+	}
+	filter := mustAssigneeFilter(t, strconv.FormatInt(matchingUser.ID, 10), nil)
+	_, _, _, cols, meta, err := st.GetBoardPaged(ctxOwner, &pc, "", "", filter, SprintFilter{Mode: "none"}, 2)
+	if err != nil {
+		t.Fatalf("GetBoardPaged: %v", err)
+	}
+	items := cols[DefaultColumnBacklog]
+	if len(items) != 2 {
+		t.Fatalf("fallback first page has %d items, want 2: %+v", len(items), items)
+	}
+	for _, item := range items {
+		if item.AssigneeUserID == nil || *item.AssigneeUserID != matchingUser.ID {
+			t.Fatalf("fallback returned a todo for another assignee: %+v", item)
+		}
+	}
+	laneMeta := meta[DefaultColumnBacklog]
+	if laneMeta.TotalCount != boardTodoSoftCap+1 {
+		t.Fatalf("fallback filtered TotalCount = %d, want %d", laneMeta.TotalCount, boardTodoSoftCap+1)
+	}
+	if !laneMeta.HasMore || laneMeta.NextCursor == "" {
+		t.Fatalf("fallback should return a next page: %+v", laneMeta)
+	}
+
+	afterRank, afterID := ParseLaneCursor(laneMeta.NextCursor)
+	nextItems, _, _, err := st.ListTodosForBoardLane(ctxOwner, p.ID, DefaultColumnBacklog, 3, afterRank, afterID, "", "", filter, SprintFilter{Mode: "none"})
+	if err != nil {
+		t.Fatalf("ListTodosForBoardLane next page: %v", err)
+	}
+	if len(nextItems) != 3 {
+		t.Fatalf("fallback next page has %d items, want 3: %+v", len(nextItems), nextItems)
+	}
+	for _, item := range nextItems {
+		if item.AssigneeUserID == nil || *item.AssigneeUserID != matchingUser.ID {
+			t.Fatalf("fallback pagination returned a todo for another assignee: %+v", item)
+		}
+	}
+}
+
+func TestGetBoardPaged_AssigneeSprintTagSearchComposition(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	owner, err := st.BootstrapUser(ctx, "assignee-composition-owner@example.com", "password", "Owner")
+	if err != nil {
+		t.Fatalf("BootstrapUser: %v", err)
+	}
+	ctxOwner := WithUserID(ctx, owner.ID)
+	p, err := st.CreateProject(ctxOwner, "p")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	matchingUser, err := st.CreateUser(ctx, "assignee-composition-match@example.com", "password", "Matching")
+	if err != nil {
+		t.Fatalf("CreateUser matching: %v", err)
+	}
+	if err := st.AddProjectMember(ctxOwner, owner.ID, p.ID, matchingUser.ID, RoleMaintainer); err != nil {
+		t.Fatalf("AddProjectMember matching: %v", err)
+	}
+	otherUser, err := st.CreateUser(ctx, "assignee-composition-other@example.com", "password", "Other")
+	if err != nil {
+		t.Fatalf("CreateUser other: %v", err)
+	}
+	if err := st.AddProjectMember(ctxOwner, owner.ID, p.ID, otherUser.ID, RoleMaintainer); err != nil {
+		t.Fatalf("AddProjectMember other: %v", err)
+	}
+
+	targetSprint, err := st.CreateSprint(ctxOwner, p.ID, "Target", time.UnixMilli(1000), time.UnixMilli(2000))
+	if err != nil {
+		t.Fatalf("CreateSprint target: %v", err)
+	}
+	otherSprint, err := st.CreateSprint(ctxOwner, p.ID, "Other", time.UnixMilli(3000), time.UnixMilli(4000))
+	if err != nil {
+		t.Fatalf("CreateSprint other: %v", err)
+	}
+
+	for _, in := range []CreateTodoInput{
+		{Title: "Needle matching todo", Tags: []string{"focus"}, AssigneeUserID: ptrInt64(matchingUser.ID), SprintID: ptrInt64(targetSprint.ID)},
+		{Title: "Needle wrong assignee", Tags: []string{"focus"}, AssigneeUserID: ptrInt64(otherUser.ID), SprintID: ptrInt64(targetSprint.ID)},
+		{Title: "Needle wrong sprint", Tags: []string{"focus"}, AssigneeUserID: ptrInt64(matchingUser.ID), SprintID: ptrInt64(otherSprint.ID)},
+		{Title: "Needle wrong tag", Tags: []string{"other"}, AssigneeUserID: ptrInt64(matchingUser.ID), SprintID: ptrInt64(targetSprint.ID)},
+		{Title: "Wrong search term", Tags: []string{"focus"}, AssigneeUserID: ptrInt64(matchingUser.ID), SprintID: ptrInt64(targetSprint.ID)},
+	} {
+		if _, err := st.CreateTodo(ctxOwner, p.ID, in, ModeFull); err != nil {
+			t.Fatalf("CreateTodo(%q): %v", in.Title, err)
+		}
+	}
+
+	pc, err := st.GetProjectContextForRead(ctxOwner, p.ID, ModeFull)
+	if err != nil {
+		t.Fatalf("GetProjectContextForRead: %v", err)
+	}
+	filter := mustAssigneeFilter(t, strconv.FormatInt(matchingUser.ID, 10), nil)
+	sprintFilter := SprintFilter{Mode: "sprint", SprintID: targetSprint.ID}
+	_, _, _, cols, meta, err := st.GetBoardPaged(ctxOwner, &pc, "focus", "needle", filter, sprintFilter, 10)
+	if err != nil {
+		t.Fatalf("GetBoardPaged: %v", err)
+	}
+	items := cols[DefaultColumnBacklog]
+	if len(items) != 1 || items[0].Title != "Needle matching todo" {
+		t.Fatalf("expected only the fully matching todo, got %+v", items)
+	}
+	if got := meta[DefaultColumnBacklog].TotalCount; got != 1 {
+		t.Fatalf("composed filter TotalCount = %d, want 1", got)
 	}
 }

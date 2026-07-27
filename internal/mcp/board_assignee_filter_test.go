@@ -183,8 +183,12 @@ func TestMCPBoardGetAssigneeValidation(t *testing.T) {
 			t.Fatalf("numeric assignee expected 400, got %d body=%#v", status.StatusCode, out)
 		}
 		errObj := out["error"].(map[string]any)
-		if errObj["code"] != mcp.CodeValidationError || errObj["message"] != "invalid input" {
+		if errObj["code"] != mcp.CodeValidationError || errObj["message"] != "invalid assignee" {
 			t.Fatalf("unexpected numeric assignee error: %#v", errObj)
+		}
+		details := errObj["details"].(map[string]any)
+		if details["field"] != "assignee" {
+			t.Fatalf("unexpected numeric assignee details: %#v", details)
 		}
 	})
 }

@@ -344,9 +344,10 @@ positive user ID encoded as a string. For example:
 }
 ```
 
-Use `"42"`, not JSON number `42`, for a concrete user ID. Invalid values return
-`VALIDATION_ERROR` instead of silently returning an unfiltered board. A valid
-unknown or non-member user ID returns an empty board.
+Use `"42"`, not JSON number `42`, for a concrete user ID. Invalid values,
+including non-string JSON values, return `VALIDATION_ERROR` with
+`details.field: "assignee"` instead of silently returning an unfiltered board.
+A valid unknown or non-member user ID returns an empty board.
 
 **Workflow**
 

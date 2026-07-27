@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -22,6 +23,25 @@ type boardGetInput struct {
 	CursorByColumn map[string]string `json:"cursorByColumn"`
 }
 
+func boardGetAssigneeHasInvalidType(input any) bool {
+	b, err := json.Marshal(input)
+	if err != nil {
+		return false
+	}
+	var raw struct {
+		Assignee json.RawMessage `json:"assignee"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil || len(raw.Assignee) == 0 {
+		return false
+	}
+	var value any
+	if err := json.Unmarshal(raw.Assignee, &value); err != nil {
+		return false
+	}
+	_, ok := value.(string)
+	return !ok
+}
+
 func (a *Adapter) handleBoardGet(ctx context.Context, input any) (any, map[string]any, *adapterError) {
 	auth, bootstrapAvailable, err := a.authState(ctx)
 	if err != nil {
@@ -35,6 +55,10 @@ func (a *Adapter) handleBoardGet(ctx context.Context, input any) (any, map[strin
 		return nil, nil, newAdapterError(http.StatusForbidden, CodeCapabilityUnavailable, "board_get is unavailable before bootstrap", nil)
 	case !auth.Authenticated:
 		return nil, nil, newAdapterError(http.StatusUnauthorized, CodeAuthRequired, "Sign-in required for this tool", nil)
+	}
+
+	if boardGetAssigneeHasInvalidType(input) {
+		return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid assignee", map[string]any{"field": "assignee"})
 	}
 
 	var in boardGetInput

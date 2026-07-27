@@ -17,6 +17,8 @@ type todoWithLaneTotal struct {
 	LaneTotal int
 }
 
+const boardTodoSoftCap = 2000
+
 // flushLane writes the first limitPerLane items to cols[key], and meta for hasMore/cursor/totalCount.
 func flushLane(key string, page []Todo, laneTotal, limitPerLane int, cols map[string][]Todo, meta map[string]LaneMeta) {
 	hasMore := len(page) > limitPerLane
@@ -134,7 +136,6 @@ func (s *Store) GetBoardPaged(ctx context.Context, pc *ProjectContext, tagFilter
 	}
 
 	// Soft cap: if filtered count exceeds threshold, fall back to per-lane queries (bounded memory)
-	const boardTodoSoftCap = 2000
 	totalTodos, err := s.countTodosForBoard(ctx, projectID, resolvedFilter, searchFilter, assigneeFilter, sprintFilter)
 	if err != nil {
 		return Project{}, nil, nil, nil, nil, err
