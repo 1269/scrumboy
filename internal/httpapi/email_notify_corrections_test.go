@@ -129,7 +129,7 @@ func TestEmailNotifier_AssignmentAndActivityAreIndependent(t *testing.T) {
 	if !strings.Contains(byRecipient["assignee@example.com"].Subject, "Assigned to you") {
 		t.Fatalf("expected assignment category for assignee, got %+v", got)
 	}
-	if !strings.Contains(byRecipient["member@example.com"].Subject, "activity update") {
+	if !strings.Contains(byRecipient["member@example.com"].Subject, "card created") {
 		t.Fatalf("expected card activity for other member, got %+v", got)
 	}
 	if _, ok := byRecipient["actor@example.com"]; ok {
@@ -146,7 +146,7 @@ func TestEmailNotifier_UnassignmentStillProcessesActivity(t *testing.T) {
 	n.handle(context.Background(), assignedEvent(t, 1, nil, "todo_updated"))
 
 	got := q.Drain()
-	if len(got) != 1 || got[0].To != "assignee@example.com" || !strings.Contains(got[0].Subject, "activity update") {
+	if len(got) != 1 || got[0].To != "assignee@example.com" || !strings.Contains(got[0].Subject, "card updated") {
 		t.Fatalf("expected one card-activity delivery after unassignment, got %+v", got)
 	}
 }
