@@ -26,6 +26,31 @@ type recordingLegacyReadStore struct {
 	workflow []store.WorkflowColumn
 	columns  map[string][]store.Todo
 	err      error
+
+	errFromContext bool
+}
+
+type recordingLegacyReadAccessStore struct {
+	calls int
+
+	ctx       context.Context
+	projectID int64
+	mode      store.Mode
+
+	projectContext store.ProjectContext
+	err            error
+}
+
+func (s *recordingLegacyReadAccessStore) GetProjectContextForRead(
+	ctx context.Context,
+	projectID int64,
+	mode store.Mode,
+) (store.ProjectContext, error) {
+	s.calls++
+	s.ctx = ctx
+	s.projectID = projectID
+	s.mode = mode
+	return s.projectContext, s.err
 }
 
 func (s *recordingLegacyReadStore) GetBoard(
@@ -52,6 +77,9 @@ func (s *recordingLegacyReadStore) GetBoard(
 	s.sprintFilter = sprintFilter
 	s.sortOrder = sortOrder
 
+	if s.errFromContext {
+		return s.project, s.tags, s.workflow, s.columns, ctx.Err()
+	}
 	return s.project, s.tags, s.workflow, s.columns, s.err
 }
 
@@ -88,9 +116,15 @@ func TestReadServiceReadInitial_DelegatesToExistingService(t *testing.T) {
 		},
 	}
 	laneStore := &recordingLaneReadStore{}
+	legacyAccessStore := &recordingLegacyReadAccessStore{}
 	legacyStore := &recordingLegacyReadStore{}
 
-	result, err := NewReadService(initialStore, laneStore, legacyStore).ReadInitial(ctx, pc, query)
+	result, err := NewReadService(
+		initialStore,
+		laneStore,
+		legacyAccessStore,
+		legacyStore,
+	).ReadInitial(ctx, pc, query)
 	if err != nil {
 		t.Fatalf("ReadInitial: %v", err)
 	}
@@ -98,8 +132,13 @@ func TestReadServiceReadInitial_DelegatesToExistingService(t *testing.T) {
 	if initialStore.calls != 1 {
 		t.Fatalf("GetBoardPaged calls = %d, want 1", initialStore.calls)
 	}
-	if laneStore.calls != 0 || legacyStore.calls != 0 {
-		t.Fatalf("unexpected other-port calls: lane=%d legacy=%d", laneStore.calls, legacyStore.calls)
+	if laneStore.calls != 0 || legacyAccessStore.calls != 0 || legacyStore.calls != 0 {
+		t.Fatalf(
+			"unexpected other-port calls: lane=%d legacyAccess=%d legacy=%d",
+			laneStore.calls,
+			legacyAccessStore.calls,
+			legacyStore.calls,
+		)
 	}
 	if initialStore.ctx != ctx || initialStore.projectContext != pc {
 		t.Fatal("ReadInitial changed the context or project-context pointer")
@@ -149,9 +188,15 @@ func TestReadServiceReadLane_DelegatesToExistingService(t *testing.T) {
 		nextCursor: "10:101",
 		hasMore:    true,
 	}
+	legacyAccessStore := &recordingLegacyReadAccessStore{}
 	legacyStore := &recordingLegacyReadStore{}
 
-	result, err := NewReadService(initialStore, laneStore, legacyStore).ReadLane(ctx, pc, query)
+	result, err := NewReadService(
+		initialStore,
+		laneStore,
+		legacyAccessStore,
+		legacyStore,
+	).ReadLane(ctx, pc, query)
 	if err != nil {
 		t.Fatalf("ReadLane: %v", err)
 	}
@@ -159,8 +204,13 @@ func TestReadServiceReadLane_DelegatesToExistingService(t *testing.T) {
 	if laneStore.calls != 1 {
 		t.Fatalf("ListTodosForBoardLane calls = %d, want 1", laneStore.calls)
 	}
-	if initialStore.calls != 0 || legacyStore.calls != 0 {
-		t.Fatalf("unexpected other-port calls: initial=%d legacy=%d", initialStore.calls, legacyStore.calls)
+	if initialStore.calls != 0 || legacyAccessStore.calls != 0 || legacyStore.calls != 0 {
+		t.Fatalf(
+			"unexpected other-port calls: initial=%d legacyAccess=%d legacy=%d",
+			initialStore.calls,
+			legacyAccessStore.calls,
+			legacyStore.calls,
+		)
 	}
 	if laneStore.ctx != ctx || laneStore.projectID != pc.Project.ID {
 		t.Fatal("ReadLane changed the context or project ID")
@@ -186,7 +236,109 @@ func TestReadServiceReadLane_DelegatesToExistingService(t *testing.T) {
 	}
 }
 
-func TestReadServiceReadLegacy_DelegatesExactlyAndNamesResult(t *testing.T) {
+func TestReadServicePrepareLegacy_DelegatesAccessExactly(t *testing.T) {
+	ctx := context.WithValue(context.Background(), readServiceContextKey{}, "legacy-access")
+	target := LegacyReadTarget{
+		ProjectID: 73,
+		Mode:      store.ModeAnonymous,
+	}
+	wantProjectContext := store.ProjectContext{
+		Project:     store.Project{ID: target.ProjectID, Slug: "prepared-project"},
+		Role:        store.RoleViewer,
+		AuthEnabled: true,
+	}
+	initialStore := &recordingReadStore{}
+	laneStore := &recordingLaneReadStore{}
+	legacyAccessStore := &recordingLegacyReadAccessStore{
+		projectContext: wantProjectContext,
+	}
+	legacyStore := &recordingLegacyReadStore{}
+
+	prepared, err := NewReadService(
+		initialStore,
+		laneStore,
+		legacyAccessStore,
+		legacyStore,
+	).PrepareLegacy(ctx, target)
+	if err != nil {
+		t.Fatalf("PrepareLegacy: %v", err)
+	}
+	if prepared == nil {
+		t.Fatal("PrepareLegacy returned a nil prepared read")
+	}
+	if legacyAccessStore.calls != 1 {
+		t.Fatalf("GetProjectContextForRead calls = %d, want 1", legacyAccessStore.calls)
+	}
+	if legacyAccessStore.ctx != ctx {
+		t.Fatal("PrepareLegacy did not forward the same context")
+	}
+	if legacyAccessStore.projectID != target.ProjectID {
+		t.Fatalf("projectID = %d, want %d", legacyAccessStore.projectID, target.ProjectID)
+	}
+	if legacyAccessStore.mode != target.Mode {
+		t.Fatalf("mode = %q, want %q", legacyAccessStore.mode, target.Mode)
+	}
+	if !reflect.DeepEqual(prepared.projectContext, wantProjectContext) {
+		t.Fatalf(
+			"prepared project context = %#v, want %#v",
+			prepared.projectContext,
+			wantProjectContext,
+		)
+	}
+	if prepared.legacy != legacyStore {
+		t.Fatal("prepared read did not retain the legacy data port")
+	}
+	if initialStore.calls != 0 || laneStore.calls != 0 || legacyStore.calls != 0 {
+		t.Fatalf(
+			"preparation called another port: initial=%d lane=%d legacy=%d",
+			initialStore.calls,
+			laneStore.calls,
+			legacyStore.calls,
+		)
+	}
+}
+
+func TestReadServicePrepareLegacy_ReturnsAccessErrorUnchanged(t *testing.T) {
+	sentinel := errors.New("sentinel")
+	accessErr := fmt.Errorf("legacy board access failed: %w", sentinel)
+	initialStore := &recordingReadStore{}
+	laneStore := &recordingLaneReadStore{}
+	legacyAccessStore := &recordingLegacyReadAccessStore{err: accessErr}
+	legacyStore := &recordingLegacyReadStore{}
+
+	prepared, err := NewReadService(
+		initialStore,
+		laneStore,
+		legacyAccessStore,
+		legacyStore,
+	).PrepareLegacy(
+		context.Background(),
+		LegacyReadTarget{ProjectID: 73, Mode: store.ModeFull},
+	)
+
+	if err != accessErr {
+		t.Fatalf("error = %v, want original access error %v", err, accessErr)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("error %v no longer matches sentinel", err)
+	}
+	if prepared != nil {
+		t.Fatalf("prepared read on error = %#v, want nil", prepared)
+	}
+	if legacyAccessStore.calls != 1 {
+		t.Fatalf("GetProjectContextForRead calls = %d, want 1", legacyAccessStore.calls)
+	}
+	if initialStore.calls != 0 || laneStore.calls != 0 || legacyStore.calls != 0 {
+		t.Fatalf(
+			"access failure called another port: initial=%d lane=%d legacy=%d",
+			initialStore.calls,
+			laneStore.calls,
+			legacyStore.calls,
+		)
+	}
+}
+
+func TestPreparedLegacyRead_DelegatesExactlyAndNamesResult(t *testing.T) {
 	assigneeFilter, err := store.ParseAssigneeFilter("42", nil)
 	if err != nil {
 		t.Fatalf("ParseAssigneeFilter: %v", err)
@@ -206,6 +358,7 @@ func TestReadServiceReadLegacy_DelegatesExactlyAndNamesResult(t *testing.T) {
 	}
 	initialStore := &recordingReadStore{}
 	laneStore := &recordingLaneReadStore{}
+	legacyAccessStore := &recordingLegacyReadAccessStore{projectContext: *pc}
 	legacyStore := &recordingLegacyReadStore{
 		project:  pc.Project,
 		tags:     []store.TagCount{{Name: "focus", Count: 2}},
@@ -215,22 +368,47 @@ func TestReadServiceReadLegacy_DelegatesExactlyAndNamesResult(t *testing.T) {
 		},
 	}
 
-	result, err := NewReadService(initialStore, laneStore, legacyStore).ReadLegacy(ctx, pc, query)
+	prepared, err := NewReadService(
+		initialStore,
+		laneStore,
+		legacyAccessStore,
+		legacyStore,
+	).PrepareLegacy(ctx, LegacyReadTarget{
+		ProjectID: pc.Project.ID,
+		Mode:      store.ModeFull,
+	})
 	if err != nil {
-		t.Fatalf("ReadLegacy: %v", err)
+		t.Fatalf("PrepareLegacy: %v", err)
+	}
+	result, err := prepared.Read(query)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
 	}
 
+	if legacyAccessStore.calls != 1 {
+		t.Fatalf("GetProjectContextForRead calls = %d, want 1", legacyAccessStore.calls)
+	}
 	if legacyStore.calls != 1 {
 		t.Fatalf("GetBoard calls = %d, want 1", legacyStore.calls)
 	}
 	if initialStore.calls != 0 || laneStore.calls != 0 {
-		t.Fatalf("unexpected other-port calls: initial=%d lane=%d", initialStore.calls, laneStore.calls)
+		t.Fatalf(
+			"unexpected other-port calls: initial=%d lane=%d",
+			initialStore.calls,
+			laneStore.calls,
+		)
 	}
-	if legacyStore.ctx != ctx {
-		t.Fatal("ReadLegacy did not forward the same context")
+	if legacyAccessStore.ctx != ctx || legacyStore.ctx != ctx {
+		t.Fatal("prepared legacy read did not use the same context for access and data")
 	}
-	if legacyStore.projectContext != pc {
-		t.Fatal("ReadLegacy did not forward the same project context pointer")
+	if legacyStore.projectContext != &prepared.projectContext {
+		t.Fatal("prepared legacy read did not use its owned project context")
+	}
+	if legacyStore.projectContext == pc {
+		t.Fatal("prepared legacy read retained the HTTP-side project context pointer")
+	}
+	if !reflect.DeepEqual(*legacyStore.projectContext, *pc) {
+		t.Fatal("prepared legacy read changed the resolved project context")
 	}
 	if legacyStore.tagFilter != query.TagFilter {
 		t.Fatalf("tagFilter = %q, want %q", legacyStore.tagFilter, query.TagFilter)
@@ -259,18 +437,71 @@ func TestReadServiceReadLegacy_DelegatesExactlyAndNamesResult(t *testing.T) {
 	}
 }
 
-func TestReadServiceReadLegacy_ReturnsStoreErrorUnchanged(t *testing.T) {
+func TestPreparedLegacyRead_ObservesCancellationAfterPreparation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	legacyAccessStore := &recordingLegacyReadAccessStore{
+		projectContext: store.ProjectContext{
+			Project: store.Project{ID: 73},
+		},
+	}
+	legacyStore := &recordingLegacyReadStore{errFromContext: true}
+
+	prepared, err := NewReadService(
+		&recordingReadStore{},
+		&recordingLaneReadStore{},
+		legacyAccessStore,
+		legacyStore,
+	).PrepareLegacy(
+		ctx,
+		LegacyReadTarget{ProjectID: 73, Mode: store.ModeFull},
+	)
+	if err != nil {
+		t.Fatalf("PrepareLegacy: %v", err)
+	}
+
+	cancel()
+	result, err := prepared.Read(LegacyQuery{})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+	if !reflect.DeepEqual(result, LegacyResult{}) {
+		t.Fatalf("result on cancellation = %#v, want zero value", result)
+	}
+	if legacyAccessStore.ctx != ctx || legacyStore.ctx != ctx {
+		t.Fatal("prepared read did not retain the exact preparation context")
+	}
+	if legacyStore.calls != 1 {
+		t.Fatalf("GetBoard calls = %d, want 1", legacyStore.calls)
+	}
+}
+
+func TestPreparedLegacyRead_ReturnsStoreErrorUnchanged(t *testing.T) {
 	sentinel := errors.New("sentinel")
 	storeErr := fmt.Errorf("legacy board read failed: %w", sentinel)
+	ctx := context.Background()
 	initialStore := &recordingReadStore{}
 	laneStore := &recordingLaneReadStore{}
+	legacyAccessStore := &recordingLegacyReadAccessStore{
+		projectContext: store.ProjectContext{
+			Project: store.Project{ID: 73},
+		},
+	}
 	legacyStore := &recordingLegacyReadStore{err: storeErr}
 
-	result, err := NewReadService(initialStore, laneStore, legacyStore).ReadLegacy(
-		context.Background(),
-		&store.ProjectContext{},
-		LegacyQuery{},
+	prepared, err := NewReadService(
+		initialStore,
+		laneStore,
+		legacyAccessStore,
+		legacyStore,
+	).PrepareLegacy(
+		ctx,
+		LegacyReadTarget{ProjectID: 73, Mode: store.ModeFull},
 	)
+	if err != nil {
+		t.Fatalf("PrepareLegacy: %v", err)
+	}
+	result, err := prepared.Read(LegacyQuery{})
 
 	if err != storeErr {
 		t.Fatalf("error = %v, want original store error %v", err, storeErr)
@@ -284,7 +515,17 @@ func TestReadServiceReadLegacy_ReturnsStoreErrorUnchanged(t *testing.T) {
 	if legacyStore.calls != 1 {
 		t.Fatalf("GetBoard calls = %d, want 1", legacyStore.calls)
 	}
+	if legacyAccessStore.calls != 1 {
+		t.Fatalf("GetProjectContextForRead calls = %d, want 1", legacyAccessStore.calls)
+	}
+	if legacyAccessStore.ctx != ctx || legacyStore.ctx != ctx {
+		t.Fatal("prepared read did not retain the exact preparation context")
+	}
 	if initialStore.calls != 0 || laneStore.calls != 0 {
-		t.Fatalf("unexpected other-port calls: initial=%d lane=%d", initialStore.calls, laneStore.calls)
+		t.Fatalf(
+			"unexpected other-port calls: initial=%d lane=%d",
+			initialStore.calls,
+			laneStore.calls,
+		)
 	}
 }

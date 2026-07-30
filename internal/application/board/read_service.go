@@ -40,20 +40,23 @@ type LegacyReadStore interface {
 // Initial and lane reads retain their existing service implementations. The
 // legacy read remains a lossless delegation through its own narrow store port.
 type ReadService struct {
-	initial *Service
-	lane    *LaneService
-	legacy  LegacyReadStore
+	initial      *Service
+	lane         *LaneService
+	legacyAccess LegacyReadAccessStore
+	legacy       LegacyReadStore
 }
 
 func NewReadService(
 	initialStore ReadStore,
 	laneStore LaneReadStore,
+	legacyAccessStore LegacyReadAccessStore,
 	legacyStore LegacyReadStore,
 ) *ReadService {
 	return &ReadService{
-		initial: NewService(initialStore),
-		lane:    NewLaneService(laneStore),
-		legacy:  legacyStore,
+		initial:      NewService(initialStore),
+		lane:         NewLaneService(laneStore),
+		legacyAccess: legacyAccessStore,
+		legacy:       legacyStore,
 	}
 }
 
@@ -71,30 +74,4 @@ func (s *ReadService) ReadLane(
 	query LaneQuery,
 ) (LaneResult, error) {
 	return s.lane.Read(ctx, pc, query)
-}
-
-func (s *ReadService) ReadLegacy(
-	ctx context.Context,
-	pc *store.ProjectContext,
-	query LegacyQuery,
-) (LegacyResult, error) {
-	project, tags, workflow, columns, err := s.legacy.GetBoard(
-		ctx,
-		pc,
-		query.TagFilter,
-		query.SearchFilter,
-		query.AssigneeFilter,
-		query.SprintFilter,
-		query.SortOrder,
-	)
-	if err != nil {
-		return LegacyResult{}, err
-	}
-
-	return LegacyResult{
-		Project:  project,
-		Tags:     tags,
-		Workflow: workflow,
-		Columns:  columns,
-	}, nil
 }

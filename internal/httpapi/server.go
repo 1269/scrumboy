@@ -511,7 +511,7 @@ func NewServer(st storeAPI, opts Options) *Server {
 
 	return &Server{
 		store:                       st,
-		boardReads:                  boardapp.NewReadService(st, st, st),
+		boardReads:                  boardapp.NewReadService(st, st, st, st),
 		logger:                      logger,
 		maxBody:                     maxBody,
 		maxTrelloImportBody:         maxTrelloImportBody,

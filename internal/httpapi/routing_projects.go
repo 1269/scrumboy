@@ -221,7 +221,10 @@ func (s *Server) handleProjectsProjectItem(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleProjectsProjectReads(w http.ResponseWriter, r *http.Request, rest []string, projectID int64) bool {
 	if len(rest) == 2 && rest[1] == "board" && r.Method == http.MethodGet {
 		ctx := s.requestContext(r)
-		pc, err := s.store.GetProjectContextForRead(ctx, projectID, s.storeMode())
+		prepared, err := s.boardReads.PrepareLegacy(ctx, boardapp.LegacyReadTarget{
+			ProjectID: projectID,
+			Mode:      s.storeMode(),
+		})
 		if err != nil {
 			writeStoreErr(w, err, true)
 			return true
@@ -246,7 +249,7 @@ func (s *Server) handleProjectsProjectReads(w http.ResponseWriter, r *http.Reque
 			writeValidationError(w, "invalid sort", "invalid_sort", map[string]any{"field": "sort"})
 			return true
 		}
-		result, err := s.boardReads.ReadLegacy(ctx, &pc, boardapp.LegacyQuery{
+		result, err := prepared.Read(boardapp.LegacyQuery{
 			TagFilter:      tag,
 			SearchFilter:   search,
 			AssigneeFilter: assigneeFilter,
