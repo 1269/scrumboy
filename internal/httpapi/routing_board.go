@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	boardapp "scrumboy/internal/application/board"
 	"scrumboy/internal/store"
 )
 
@@ -117,12 +118,25 @@ func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http
 				limitPerLane = n
 			}
 		}
-		project2, tags, workflow, cols, meta, err := s.store.GetBoardPaged(ctx, pc, tag, search, assigneeFilter, sprintFilter, sortOrder, limitPerLane)
+		result, err := s.boardReads.ReadInitial(ctx, pc, boardapp.Query{
+			TagFilter:      tag,
+			SearchFilter:   search,
+			AssigneeFilter: assigneeFilter,
+			SprintFilter:   sprintFilter,
+			SortOrder:      sortOrder,
+			LimitPerLane:   limitPerLane,
+		})
 		if err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		writeJSON(w, http.StatusOK, boardToJSONWithMeta(project2, workflow, tags, cols, meta))
+		writeJSON(w, http.StatusOK, boardToJSONWithMeta(
+			result.Project,
+			result.Workflow,
+			result.Tags,
+			result.Columns,
+			result.ColumnsMeta,
+		))
 		return true
 	}
 
