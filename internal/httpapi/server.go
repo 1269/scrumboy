@@ -93,8 +93,7 @@ type Options struct {
 
 type Server struct {
 	store      storeAPI
-	boardReads *boardapp.Service
-	laneReads  *boardapp.LaneService
+	boardReads *boardapp.ReadService
 
 	logger                  *log.Logger
 	maxBody                 int64
@@ -231,7 +230,7 @@ type storeAPI interface {
 
 	boardapp.ReadStore
 	boardapp.LaneReadStore
-	GetBoard(ctx context.Context, pc *store.ProjectContext, tagFilter string, searchFilter string, assigneeFilter store.AssigneeFilter, sprintFilter store.SprintFilter, sortOrder store.SortOrder) (store.Project, []store.TagCount, []store.WorkflowColumn, map[string][]store.Todo, error)
+	boardapp.LegacyReadStore
 	ListTagCounts(ctx context.Context, pc *store.ProjectContext) ([]store.TagCount, error)
 	GetDashboardSummary(ctx context.Context, userID int64, timezone string) (store.DashboardSummary, error)
 	ListDashboardTodos(ctx context.Context, userID int64, limit int, cursor *string, sort string) ([]store.DashboardTodo, *string, error)
@@ -512,8 +511,7 @@ func NewServer(st storeAPI, opts Options) *Server {
 
 	return &Server{
 		store:                       st,
-		boardReads:                  boardapp.NewService(st),
-		laneReads:                   boardapp.NewLaneService(st),
+		boardReads:                  boardapp.NewReadService(st, st, st),
 		logger:                      logger,
 		maxBody:                     maxBody,
 		maxTrelloImportBody:         maxTrelloImportBody,

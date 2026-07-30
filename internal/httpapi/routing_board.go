@@ -391,7 +391,7 @@ func (s *Server) handleBoardLaneRoutes(w http.ResponseWriter, r *http.Request, r
 		afterA, afterB = store.ParseLaneCursor(afterCursor)
 	}
 
-	result, err := s.laneReads.Read(ctx, pc, boardapp.LaneQuery{
+	result, err := s.boardReads.ReadLane(ctx, pc, boardapp.LaneQuery{
 		ColumnKey:      columnKey,
 		Limit:          limit,
 		AfterA:         afterA,

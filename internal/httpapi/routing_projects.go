@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	boardapp "scrumboy/internal/application/board"
 	"scrumboy/internal/projectcolor"
 	"scrumboy/internal/store"
 )
@@ -245,12 +246,23 @@ func (s *Server) handleProjectsProjectReads(w http.ResponseWriter, r *http.Reque
 			writeValidationError(w, "invalid sort", "invalid_sort", map[string]any{"field": "sort"})
 			return true
 		}
-		project, tags, workflow, cols, err := s.store.GetBoard(ctx, &pc, tag, search, assigneeFilter, sprintFilter, sortOrder)
+		result, err := s.boardReads.ReadLegacy(ctx, &pc, boardapp.LegacyQuery{
+			TagFilter:      tag,
+			SearchFilter:   search,
+			AssigneeFilter: assigneeFilter,
+			SprintFilter:   sprintFilter,
+			SortOrder:      sortOrder,
+		})
 		if err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		writeJSON(w, http.StatusOK, boardToJSON(project, workflow, tags, cols))
+		writeJSON(w, http.StatusOK, boardToJSON(
+			result.Project,
+			result.Workflow,
+			result.Tags,
+			result.Columns,
+		))
 		return true
 	}
 
