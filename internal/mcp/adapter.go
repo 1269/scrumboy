@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	boardapp "scrumboy/internal/application/board"
 	"scrumboy/internal/publicorigin"
 	"scrumboy/internal/store"
 )
@@ -85,6 +86,7 @@ type Options struct {
 
 type Adapter struct {
 	store        storeAPI
+	boardReads   *boardapp.MCPBoardReadService
 	mode         string
 	tools        toolRegistry
 	publicOrigin *publicorigin.Resolver
@@ -101,7 +103,14 @@ func New(st storeAPI, opts Options) *Adapter {
 	}
 
 	a := &Adapter{
-		store:        st,
+		store: st,
+		boardReads: boardapp.NewMCPBoardReadService(boardapp.MCPBoardReadServiceDependencies{
+			Access:   st,
+			Sprints:  st,
+			Workflow: st,
+			Lanes:    st,
+			Activity: st,
+		}),
 		mode:         mode,
 		tools:        make(toolRegistry),
 		publicOrigin: resolver,

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,10 @@ import (
 	"scrumboy/internal/migrate"
 	"scrumboy/internal/store"
 )
+
+func encodeBoardCursor(raw string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
 
 type boardGetStoreCall struct {
 	Operation string
