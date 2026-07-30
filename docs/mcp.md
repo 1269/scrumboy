@@ -349,6 +349,10 @@ including non-string JSON values, return `VALIDATION_ERROR` with
 `details.field: "assignee"` instead of silently returning an unfiltered board.
 A valid unknown or non-member user ID returns an empty board.
 
+`board_get` also accepts an optional string `sort`: `"newest"` or `"oldest"`
+orders items within each lane by creation time with a stable ID tie-break.
+Omit `sort` to preserve manual drag-rank order.
+
 **Workflow**
 
 - `workflow_list`
@@ -720,6 +724,11 @@ Same **`code`** for a rejected **Bearer** token, with **`message`: `Authenticati
 - **Protocol errors** (bad JSON, unknown method, etc.): response is JSON-RPC **`error`** with integer **`code`** (e.g. `-32700` parse error, `-32601` method not found). Valid requests with an `id` keep the normal **200** protocol-error response. Rejected no-`id` messages use **400**, with `id: null` when an error body is emitted.
 - **Tool execution failure** (`tools/call`): HTTP **200** with a **`result`** object containing **`isError: true`**, **`content`** (text), and no successful `structuredContent` in the error path (`writeJSONRPCToolErrorResult` in `internal/mcp/jsonrpc_handler.go`).
 - **Tool success**: **`result`** includes **`content`** (JSON text of payload) and **`structuredContent`** (parsed tool `data`).
+- **`board_get` success**: `structuredContent` keeps `project` and `columns` at
+  their existing locations and also includes `nextCursorByColumn`,
+  `hasMoreByColumn`, and `totalCountByColumn`. The text content serializes the
+  same enriched object. Legacy `/mcp` continues to return those maps under its
+  separate top-level `meta`.
 
 ## Notes / Limitations
 
@@ -728,7 +737,7 @@ Same **`code`** for a rejected **Bearer** token, with **`message`: `Authenticati
 - **Stateless JSON-only transport:** Scrumboy does not issue MCP session IDs, offer an SSE GET stream, resumability, or server-initiated requests. An authenticated GET returns 405.
 - **Protocol versions:** Streamable HTTP supports `2025-03-26`, `2025-06-18`, and `2025-11-25`. Unsupported initialize versions negotiate to `2025-11-25`. A missing post-initialize header defaults to `2025-03-26`; malformed or unsupported headers return 400.
 - **Anonymous mode:** Effectively no authenticated tools; capabilities still describe the server.
-- **Pagination:** Global defaults in capabilities mention `limit` / `cursor` / `nextCursor` / `hasMore`; **`board_get`** uses **`cursorByColumn`** (per column key) — see `tool_catalog.go` and `pagination.futureSpecialCases` in capabilities.
+- **Pagination:** Global defaults in capabilities mention `limit` / `cursor` / `nextCursor` / `hasMore`; **`board_get`** uses **`cursorByColumn`** (per column key) and returns `nextCursorByColumn`, `hasMoreByColumn`, and `totalCountByColumn` in JSON-RPC structured/text content (or legacy `meta`) — see `tool_catalog.go` and `pagination.futureSpecialCases` in capabilities.
 - **`sprints_update` `patch`:** Catalog documents `plannedStartAt` / `plannedEndAt` as **Unix milliseconds** (integers), not RFC3339 strings (unlike `sprints_create`).
 - **JSON-RPC `serverInfo.version`:** The value returned by `initialize` is the string **`1.0.0`** in code (`internal/mcp/jsonrpc_handler.go`), not necessarily the Scrumboy app version from `internal/version`.
 - **`plannedTools`:** Currently always empty / omitted; there is no separate catalog of unimplemented tools in responses.

@@ -435,12 +435,49 @@ func (a *Adapter) handleJSONRPCToolsCall(w http.ResponseWriter, r *http.Request,
 		writeJSONRPCToolErrorResult(w, req.ID, err)
 		return
 	}
-	data, _, toolErr := handler(r.Context(), args)
+	data, meta, toolErr := handler(r.Context(), args)
 	if toolErr != nil {
 		writeJSONRPCToolErrorResult(w, req.ID, toolErr.Message)
 		return
 	}
-	writeJSONRPCToolSuccessResult(w, req.ID, data)
+	writeJSONRPCToolSuccessResult(w, req.ID, jsonRPCToolStructuredContent(params.Name, data, meta))
+}
+
+var boardGetJSONRPCMetadataKeys = [...]string{
+	"nextCursorByColumn",
+	"hasMoreByColumn",
+	"totalCountByColumn",
+}
+
+// jsonRPCToolStructuredContent composes transport-specific structured output.
+//
+// Handler metadata remains a legacy-envelope concern for all tools except
+// board_get. Board pagination is part of the usable JSON-RPC result because a
+// client cannot continue paging without the returned per-column cursors. Keep
+// this explicit instead of generically merging metadata from every tool: those
+// contracts have not been characterized for additive JSON-RPC exposure.
+func jsonRPCToolStructuredContent(toolName string, data any, meta map[string]any) any {
+	if canonical, ok := legacyToolAliases[toolName]; ok {
+		toolName = canonical
+	}
+	if toolName != "board_get" {
+		return data
+	}
+
+	boardData, ok := data.(map[string]any)
+	if !ok {
+		return data
+	}
+	structured := make(map[string]any, len(boardData)+len(boardGetJSONRPCMetadataKeys))
+	for key, value := range boardData {
+		structured[key] = value
+	}
+	for _, key := range boardGetJSONRPCMetadataKeys {
+		if value, exists := meta[key]; exists {
+			structured[key] = value
+		}
+	}
+	return structured
 }
 
 func requiredFieldNamesFromSchema(schema map[string]any) []string {

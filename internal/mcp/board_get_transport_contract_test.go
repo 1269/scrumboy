@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"scrumboy/internal/store"
@@ -158,7 +159,7 @@ func TestMCPBoardGetTransportContract_LegacyErrorEnvelope(t *testing.T) {
 	}
 }
 
-func TestMCPBoardGetTransportContract_JSONRPCSuccessDropsPaginationMetadata(t *testing.T) {
+func TestMCPBoardGetTransportContract_JSONRPCSuccessExposesPaginationMetadata(t *testing.T) {
 	fixture := newBoardGetTransportFixture(t)
 
 	resp, out := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
@@ -182,13 +183,29 @@ func TestMCPBoardGetTransportContract_JSONRPCSuccessDropsPaginationMetadata(t *t
 		t.Fatalf("result keys = %v, want %v", got, want)
 	}
 	structured := result["structuredContent"].(map[string]any)
-	if got, want := sortedMapKeys(structured), []string{"columns", "project"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("structuredContent keys = %v, want current board-only shape %v", got, want)
+	if got, want := sortedMapKeys(structured), []string{
+		"columns",
+		"hasMoreByColumn",
+		"nextCursorByColumn",
+		"project",
+		"totalCountByColumn",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("structuredContent keys = %v, want additive board shape %v", got, want)
 	}
-	for _, omitted := range []string{"nextCursorByColumn", "hasMoreByColumn", "totalCountByColumn", "meta"} {
-		if _, ok := structured[omitted]; ok {
-			t.Fatalf("structuredContent unexpectedly exposes %q: %#v", omitted, structured)
-		}
+	if _, ok := structured["meta"]; ok {
+		t.Fatalf("structuredContent must not wrap pagination in meta: %#v", structured)
+	}
+	hasMore := structured["hasMoreByColumn"].(map[string]any)
+	next := structured["nextCursorByColumn"].(map[string]any)
+	total := structured["totalCountByColumn"].(map[string]any)
+	if hasMore[store.DefaultColumnBacklog] != true {
+		t.Fatalf("backlog hasMore = %#v", hasMore)
+	}
+	if cursor, ok := next[store.DefaultColumnBacklog].(string); !ok || cursor == "" {
+		t.Fatalf("backlog next cursor = %#v", next)
+	}
+	if total[store.DefaultColumnBacklog] != float64(3) {
+		t.Fatalf("backlog total = %#v", total)
 	}
 	content := result["content"].([]any)
 	if len(content) != 1 {
@@ -204,6 +221,62 @@ func TestMCPBoardGetTransportContract_JSONRPCSuccessDropsPaginationMetadata(t *t
 	}
 	if !reflect.DeepEqual(textData, structured) {
 		t.Fatalf("text JSON != structured content\ntext=%#v\nstructured=%#v", textData, structured)
+	}
+}
+
+func TestMCPBoardGetTransportContract_JSONRPCPaginationContinuesFromReturnedCursor(t *testing.T) {
+	fixture := newBoardGetTransportFixture(t)
+
+	_, first := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "first-page",
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "board_get",
+			"arguments": map[string]any{
+				"projectSlug": fixture.slug,
+				"limit":       2,
+			},
+		},
+	})
+	firstStructured := first["result"].(map[string]any)["structuredContent"].(map[string]any)
+	firstNext := firstStructured["nextCursorByColumn"].(map[string]any)
+	cursor, ok := firstNext[store.DefaultColumnBacklog].(string)
+	if !ok || cursor == "" {
+		t.Fatalf("first-page backlog cursor = %#v", firstNext)
+	}
+
+	resp, second := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "second-page",
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "board_get",
+			"arguments": map[string]any{
+				"projectSlug": fixture.slug,
+				"limit":       2,
+				"cursorByColumn": map[string]any{
+					store.DefaultColumnBacklog: cursor,
+				},
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusOK || second["id"] != "second-page" {
+		t.Fatalf("second-page status/id = %d/%#v, body=%#v", resp.StatusCode, second["id"], second)
+	}
+	secondStructured := second["result"].(map[string]any)["structuredContent"].(map[string]any)
+	backlog := boardColumnByKey(t, secondStructured["columns"].([]any), store.DefaultColumnBacklog)
+	if items := backlog["items"].([]any); len(items) != 1 {
+		t.Fatalf("second-page backlog items = %#v, want one", items)
+	}
+	if got := secondStructured["hasMoreByColumn"].(map[string]any)[store.DefaultColumnBacklog]; got != false {
+		t.Fatalf("second-page backlog hasMore = %#v, want false", got)
+	}
+	if got := secondStructured["nextCursorByColumn"].(map[string]any)[store.DefaultColumnBacklog]; got != nil {
+		t.Fatalf("second-page backlog next cursor = %#v, want null", got)
+	}
+	if got := secondStructured["totalCountByColumn"].(map[string]any)[store.DefaultColumnBacklog]; got != float64(3) {
+		t.Fatalf("second-page backlog total = %#v, want 3", got)
 	}
 }
 
@@ -446,7 +519,7 @@ func TestMCPBoardGetTransportContract_CanonicalAndAliasValidationEquivalent(t *t
 	}
 }
 
-func TestMCPBoardGetTransportContract_ToolsListAdvertisesCanonicalWithoutSort(t *testing.T) {
+func TestMCPBoardGetTransportContract_ToolsListAdvertisesCanonicalAndSort(t *testing.T) {
 	fixture := newBoardGetTransportFixture(t)
 
 	_, out := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
@@ -469,12 +542,23 @@ func TestMCPBoardGetTransportContract_ToolsListAdvertisesCanonicalWithoutSort(t 
 		t.Fatal("canonical board_get missing from tools/list")
 	}
 	properties := board["inputSchema"].(map[string]any)["properties"].(map[string]any)
-	if _, ok := properties["sort"]; ok {
-		t.Fatalf("Phase 7 current contract unexpectedly advertises runtime sort: %#v", properties["sort"])
+	sortProperty, ok := properties["sort"].(map[string]any)
+	if !ok {
+		t.Fatalf("board_get sort schema has unexpected shape: %#v", properties["sort"])
+	}
+	if sortProperty["type"] != "string" {
+		t.Fatalf("board_get sort type = %#v, want string", sortProperty["type"])
+	}
+	if got, want := sortProperty["enum"], []any{"newest", "oldest"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("board_get sort enum = %#v, want %#v", got, want)
+	}
+	description, _ := sortProperty["description"].(string)
+	if !strings.Contains(description, "omit for manual drag-rank order") {
+		t.Fatalf("board_get sort description = %q", description)
 	}
 }
 
-func TestMCPBoardGetTransportContract_RuntimeSortWorksDespiteDiscoveryOmission(t *testing.T) {
+func TestMCPBoardGetTransportContract_RuntimeSortMatchesAdvertisedValues(t *testing.T) {
 	fixture := newBoardGetTransportFixture(t)
 
 	for _, sortOrder := range []string{"newest", "oldest"} {
