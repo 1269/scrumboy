@@ -37,41 +37,35 @@ type LegacyReadStore interface {
 
 // ReadService is the application surface for REST board reads.
 //
-// Initial and lane reads retain their existing service implementations. The
-// legacy read remains a lossless delegation through its own narrow store port.
+// Initial and lane reads retain their existing service implementations.
+// Access preparation and data reads remain behind their own narrow store ports.
 type ReadService struct {
 	initial      *Service
 	lane         *LaneService
 	legacyAccess LegacyReadAccessStore
 	legacy       LegacyReadStore
+	slugAccess   SlugReadAccessStore
+	slugSprints  SlugReadSprintStore
 }
 
-func NewReadService(
-	initialStore ReadStore,
-	laneStore LaneReadStore,
-	legacyAccessStore LegacyReadAccessStore,
-	legacyStore LegacyReadStore,
-) *ReadService {
+// ReadServiceDependencies names the persistence role supplied to each board
+// read operation.
+type ReadServiceDependencies struct {
+	Initial      ReadStore
+	Lane         LaneReadStore
+	LegacyAccess LegacyReadAccessStore
+	Legacy       LegacyReadStore
+	SlugAccess   SlugReadAccessStore
+	SlugSprints  SlugReadSprintStore
+}
+
+func NewReadService(deps ReadServiceDependencies) *ReadService {
 	return &ReadService{
-		initial:      NewService(initialStore),
-		lane:         NewLaneService(laneStore),
-		legacyAccess: legacyAccessStore,
-		legacy:       legacyStore,
+		initial:      NewService(deps.Initial),
+		lane:         NewLaneService(deps.Lane),
+		legacyAccess: deps.LegacyAccess,
+		legacy:       deps.Legacy,
+		slugAccess:   deps.SlugAccess,
+		slugSprints:  deps.SlugSprints,
 	}
-}
-
-func (s *ReadService) ReadInitial(
-	ctx context.Context,
-	pc *store.ProjectContext,
-	query Query,
-) (Result, error) {
-	return s.initial.ReadInitial(ctx, pc, query)
-}
-
-func (s *ReadService) ReadLane(
-	ctx context.Context,
-	pc *store.ProjectContext,
-	query LaneQuery,
-) (LaneResult, error) {
-	return s.lane.Read(ctx, pc, query)
 }

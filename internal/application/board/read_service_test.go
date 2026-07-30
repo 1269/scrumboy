@@ -85,7 +85,7 @@ func (s *recordingLegacyReadStore) GetBoard(
 
 type readServiceContextKey struct{}
 
-func TestReadServiceReadInitial_DelegatesToExistingService(t *testing.T) {
+func TestPreparedSlugRead_ReadInitialDelegatesToExistingService(t *testing.T) {
 	assigneeFilter, err := store.ParseAssigneeFilter("42", nil)
 	if err != nil {
 		t.Fatalf("ParseAssigneeFilter: %v", err)
@@ -118,13 +118,21 @@ func TestReadServiceReadInitial_DelegatesToExistingService(t *testing.T) {
 	laneStore := &recordingLaneReadStore{}
 	legacyAccessStore := &recordingLegacyReadAccessStore{}
 	legacyStore := &recordingLegacyReadStore{}
+	slugAccessStore := &recordingSlugReadAccessStore{projectContext: *pc}
+	slugSprintStore := &recordingSlugReadSprintStore{}
 
-	result, err := NewReadService(
-		initialStore,
-		laneStore,
-		legacyAccessStore,
-		legacyStore,
-	).ReadInitial(ctx, pc, query)
+	prepared, err := NewReadService(ReadServiceDependencies{
+		Initial:      initialStore,
+		Lane:         laneStore,
+		LegacyAccess: legacyAccessStore,
+		Legacy:       legacyStore,
+		SlugAccess:   slugAccessStore,
+		SlugSprints:  slugSprintStore,
+	}).PrepareSlugRead(ctx, SlugReadTarget{Slug: pc.Project.Slug, Mode: store.ModeFull})
+	if err != nil {
+		t.Fatalf("PrepareSlugRead: %v", err)
+	}
+	result, err := prepared.ReadInitial(query)
 	if err != nil {
 		t.Fatalf("ReadInitial: %v", err)
 	}
@@ -132,16 +140,25 @@ func TestReadServiceReadInitial_DelegatesToExistingService(t *testing.T) {
 	if initialStore.calls != 1 {
 		t.Fatalf("GetBoardPaged calls = %d, want 1", initialStore.calls)
 	}
-	if laneStore.calls != 0 || legacyAccessStore.calls != 0 || legacyStore.calls != 0 {
+	if laneStore.calls != 0 ||
+		legacyAccessStore.calls != 0 ||
+		legacyStore.calls != 0 ||
+		slugAccessStore.calls != 1 ||
+		slugSprintStore.calls != 0 {
 		t.Fatalf(
-			"unexpected other-port calls: lane=%d legacyAccess=%d legacy=%d",
+			"port calls: lane=%d legacyAccess=%d legacy=%d slugAccess=%d slugSprints=%d, want slugAccess=1 and all others 0",
 			laneStore.calls,
 			legacyAccessStore.calls,
 			legacyStore.calls,
+			slugAccessStore.calls,
+			slugSprintStore.calls,
 		)
 	}
-	if initialStore.ctx != ctx || initialStore.projectContext != pc {
-		t.Fatal("ReadInitial changed the context or project-context pointer")
+	if initialStore.ctx != ctx || initialStore.projectContext != &prepared.projectContext {
+		t.Fatal("ReadInitial did not use the bound context and owned project context")
+	}
+	if initialStore.projectContext == pc || !reflect.DeepEqual(*initialStore.projectContext, *pc) {
+		t.Fatal("ReadInitial did not use a value-equivalent copy of the resolved project context")
 	}
 	if initialStore.tagFilter != query.TagFilter ||
 		initialStore.searchFilter != query.SearchFilter ||
@@ -163,7 +180,7 @@ func TestReadServiceReadInitial_DelegatesToExistingService(t *testing.T) {
 	}
 }
 
-func TestReadServiceReadLane_DelegatesToExistingService(t *testing.T) {
+func TestPreparedSlugRead_ReadLaneDelegatesToExistingService(t *testing.T) {
 	assigneeFilter, err := store.ParseAssigneeFilter("42", nil)
 	if err != nil {
 		t.Fatalf("ParseAssigneeFilter: %v", err)
@@ -190,13 +207,21 @@ func TestReadServiceReadLane_DelegatesToExistingService(t *testing.T) {
 	}
 	legacyAccessStore := &recordingLegacyReadAccessStore{}
 	legacyStore := &recordingLegacyReadStore{}
+	slugAccessStore := &recordingSlugReadAccessStore{projectContext: *pc}
+	slugSprintStore := &recordingSlugReadSprintStore{}
 
-	result, err := NewReadService(
-		initialStore,
-		laneStore,
-		legacyAccessStore,
-		legacyStore,
-	).ReadLane(ctx, pc, query)
+	prepared, err := NewReadService(ReadServiceDependencies{
+		Initial:      initialStore,
+		Lane:         laneStore,
+		LegacyAccess: legacyAccessStore,
+		Legacy:       legacyStore,
+		SlugAccess:   slugAccessStore,
+		SlugSprints:  slugSprintStore,
+	}).PrepareSlugRead(ctx, SlugReadTarget{Slug: pc.Project.Slug, Mode: store.ModeFull})
+	if err != nil {
+		t.Fatalf("PrepareSlugRead: %v", err)
+	}
+	result, err := prepared.ReadLane(query)
 	if err != nil {
 		t.Fatalf("ReadLane: %v", err)
 	}
@@ -204,12 +229,18 @@ func TestReadServiceReadLane_DelegatesToExistingService(t *testing.T) {
 	if laneStore.calls != 1 {
 		t.Fatalf("ListTodosForBoardLane calls = %d, want 1", laneStore.calls)
 	}
-	if initialStore.calls != 0 || legacyAccessStore.calls != 0 || legacyStore.calls != 0 {
+	if initialStore.calls != 0 ||
+		legacyAccessStore.calls != 0 ||
+		legacyStore.calls != 0 ||
+		slugAccessStore.calls != 1 ||
+		slugSprintStore.calls != 0 {
 		t.Fatalf(
-			"unexpected other-port calls: initial=%d legacyAccess=%d legacy=%d",
+			"port calls: initial=%d legacyAccess=%d legacy=%d slugAccess=%d slugSprints=%d, want slugAccess=1 and all others 0",
 			initialStore.calls,
 			legacyAccessStore.calls,
 			legacyStore.calls,
+			slugAccessStore.calls,
+			slugSprintStore.calls,
 		)
 	}
 	if laneStore.ctx != ctx || laneStore.projectID != pc.Project.ID {
@@ -253,13 +284,17 @@ func TestReadServicePrepareLegacy_DelegatesAccessExactly(t *testing.T) {
 		projectContext: wantProjectContext,
 	}
 	legacyStore := &recordingLegacyReadStore{}
+	slugAccessStore := &recordingSlugReadAccessStore{}
+	slugSprintStore := &recordingSlugReadSprintStore{}
 
-	prepared, err := NewReadService(
-		initialStore,
-		laneStore,
-		legacyAccessStore,
-		legacyStore,
-	).PrepareLegacy(ctx, target)
+	prepared, err := NewReadService(ReadServiceDependencies{
+		Initial:      initialStore,
+		Lane:         laneStore,
+		LegacyAccess: legacyAccessStore,
+		Legacy:       legacyStore,
+		SlugAccess:   slugAccessStore,
+		SlugSprints:  slugSprintStore,
+	}).PrepareLegacy(ctx, target)
 	if err != nil {
 		t.Fatalf("PrepareLegacy: %v", err)
 	}
@@ -288,12 +323,18 @@ func TestReadServicePrepareLegacy_DelegatesAccessExactly(t *testing.T) {
 	if prepared.legacy != legacyStore {
 		t.Fatal("prepared read did not retain the legacy data port")
 	}
-	if initialStore.calls != 0 || laneStore.calls != 0 || legacyStore.calls != 0 {
+	if initialStore.calls != 0 ||
+		laneStore.calls != 0 ||
+		legacyStore.calls != 0 ||
+		slugAccessStore.calls != 0 ||
+		slugSprintStore.calls != 0 {
 		t.Fatalf(
-			"preparation called another port: initial=%d lane=%d legacy=%d",
+			"preparation called another port: initial=%d lane=%d legacy=%d slugAccess=%d slugSprints=%d",
 			initialStore.calls,
 			laneStore.calls,
 			legacyStore.calls,
+			slugAccessStore.calls,
+			slugSprintStore.calls,
 		)
 	}
 }
@@ -305,13 +346,17 @@ func TestReadServicePrepareLegacy_ReturnsAccessErrorUnchanged(t *testing.T) {
 	laneStore := &recordingLaneReadStore{}
 	legacyAccessStore := &recordingLegacyReadAccessStore{err: accessErr}
 	legacyStore := &recordingLegacyReadStore{}
+	slugAccessStore := &recordingSlugReadAccessStore{}
+	slugSprintStore := &recordingSlugReadSprintStore{}
 
-	prepared, err := NewReadService(
-		initialStore,
-		laneStore,
-		legacyAccessStore,
-		legacyStore,
-	).PrepareLegacy(
+	prepared, err := NewReadService(ReadServiceDependencies{
+		Initial:      initialStore,
+		Lane:         laneStore,
+		LegacyAccess: legacyAccessStore,
+		Legacy:       legacyStore,
+		SlugAccess:   slugAccessStore,
+		SlugSprints:  slugSprintStore,
+	}).PrepareLegacy(
 		context.Background(),
 		LegacyReadTarget{ProjectID: 73, Mode: store.ModeFull},
 	)
@@ -328,12 +373,18 @@ func TestReadServicePrepareLegacy_ReturnsAccessErrorUnchanged(t *testing.T) {
 	if legacyAccessStore.calls != 1 {
 		t.Fatalf("GetProjectContextForRead calls = %d, want 1", legacyAccessStore.calls)
 	}
-	if initialStore.calls != 0 || laneStore.calls != 0 || legacyStore.calls != 0 {
+	if initialStore.calls != 0 ||
+		laneStore.calls != 0 ||
+		legacyStore.calls != 0 ||
+		slugAccessStore.calls != 0 ||
+		slugSprintStore.calls != 0 {
 		t.Fatalf(
-			"access failure called another port: initial=%d lane=%d legacy=%d",
+			"access failure called another port: initial=%d lane=%d legacy=%d slugAccess=%d slugSprints=%d",
 			initialStore.calls,
 			laneStore.calls,
 			legacyStore.calls,
+			slugAccessStore.calls,
+			slugSprintStore.calls,
 		)
 	}
 }
@@ -367,13 +418,17 @@ func TestPreparedLegacyRead_DelegatesExactlyAndNamesResult(t *testing.T) {
 			store.DefaultColumnBacklog: {{ID: 101, Title: "Todo"}},
 		},
 	}
+	slugAccessStore := &recordingSlugReadAccessStore{}
+	slugSprintStore := &recordingSlugReadSprintStore{}
 
-	prepared, err := NewReadService(
-		initialStore,
-		laneStore,
-		legacyAccessStore,
-		legacyStore,
-	).PrepareLegacy(ctx, LegacyReadTarget{
+	prepared, err := NewReadService(ReadServiceDependencies{
+		Initial:      initialStore,
+		Lane:         laneStore,
+		LegacyAccess: legacyAccessStore,
+		Legacy:       legacyStore,
+		SlugAccess:   slugAccessStore,
+		SlugSprints:  slugSprintStore,
+	}).PrepareLegacy(ctx, LegacyReadTarget{
 		ProjectID: pc.Project.ID,
 		Mode:      store.ModeFull,
 	})
@@ -391,11 +446,16 @@ func TestPreparedLegacyRead_DelegatesExactlyAndNamesResult(t *testing.T) {
 	if legacyStore.calls != 1 {
 		t.Fatalf("GetBoard calls = %d, want 1", legacyStore.calls)
 	}
-	if initialStore.calls != 0 || laneStore.calls != 0 {
+	if initialStore.calls != 0 ||
+		laneStore.calls != 0 ||
+		slugAccessStore.calls != 0 ||
+		slugSprintStore.calls != 0 {
 		t.Fatalf(
-			"unexpected other-port calls: initial=%d lane=%d",
+			"unexpected other-port calls: initial=%d lane=%d slugAccess=%d slugSprints=%d",
 			initialStore.calls,
 			laneStore.calls,
+			slugAccessStore.calls,
+			slugSprintStore.calls,
 		)
 	}
 	if legacyAccessStore.ctx != ctx || legacyStore.ctx != ctx {
@@ -445,13 +505,17 @@ func TestPreparedLegacyRead_ObservesCancellationAfterPreparation(t *testing.T) {
 		},
 	}
 	legacyStore := &recordingLegacyReadStore{errFromContext: true}
+	slugAccessStore := &recordingSlugReadAccessStore{}
+	slugSprintStore := &recordingSlugReadSprintStore{}
 
-	prepared, err := NewReadService(
-		&recordingReadStore{},
-		&recordingLaneReadStore{},
-		legacyAccessStore,
-		legacyStore,
-	).PrepareLegacy(
+	prepared, err := NewReadService(ReadServiceDependencies{
+		Initial:      &recordingReadStore{},
+		Lane:         &recordingLaneReadStore{},
+		LegacyAccess: legacyAccessStore,
+		Legacy:       legacyStore,
+		SlugAccess:   slugAccessStore,
+		SlugSprints:  slugSprintStore,
+	}).PrepareLegacy(
 		ctx,
 		LegacyReadTarget{ProjectID: 73, Mode: store.ModeFull},
 	)
@@ -474,6 +538,13 @@ func TestPreparedLegacyRead_ObservesCancellationAfterPreparation(t *testing.T) {
 	if legacyStore.calls != 1 {
 		t.Fatalf("GetBoard calls = %d, want 1", legacyStore.calls)
 	}
+	if slugAccessStore.calls != 0 || slugSprintStore.calls != 0 {
+		t.Fatalf(
+			"legacy read called slug ports: access=%d sprints=%d",
+			slugAccessStore.calls,
+			slugSprintStore.calls,
+		)
+	}
 }
 
 func TestPreparedLegacyRead_ReturnsStoreErrorUnchanged(t *testing.T) {
@@ -488,13 +559,17 @@ func TestPreparedLegacyRead_ReturnsStoreErrorUnchanged(t *testing.T) {
 		},
 	}
 	legacyStore := &recordingLegacyReadStore{err: storeErr}
+	slugAccessStore := &recordingSlugReadAccessStore{}
+	slugSprintStore := &recordingSlugReadSprintStore{}
 
-	prepared, err := NewReadService(
-		initialStore,
-		laneStore,
-		legacyAccessStore,
-		legacyStore,
-	).PrepareLegacy(
+	prepared, err := NewReadService(ReadServiceDependencies{
+		Initial:      initialStore,
+		Lane:         laneStore,
+		LegacyAccess: legacyAccessStore,
+		Legacy:       legacyStore,
+		SlugAccess:   slugAccessStore,
+		SlugSprints:  slugSprintStore,
+	}).PrepareLegacy(
 		ctx,
 		LegacyReadTarget{ProjectID: 73, Mode: store.ModeFull},
 	)
@@ -521,11 +596,16 @@ func TestPreparedLegacyRead_ReturnsStoreErrorUnchanged(t *testing.T) {
 	if legacyAccessStore.ctx != ctx || legacyStore.ctx != ctx {
 		t.Fatal("prepared read did not retain the exact preparation context")
 	}
-	if initialStore.calls != 0 || laneStore.calls != 0 {
+	if initialStore.calls != 0 ||
+		laneStore.calls != 0 ||
+		slugAccessStore.calls != 0 ||
+		slugSprintStore.calls != 0 {
 		t.Fatalf(
-			"unexpected other-port calls: initial=%d lane=%d",
+			"unexpected other-port calls: initial=%d lane=%d slugAccess=%d slugSprints=%d",
 			initialStore.calls,
 			laneStore.calls,
+			slugAccessStore.calls,
+			slugSprintStore.calls,
 		)
 	}
 }

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -270,7 +271,7 @@ func TestBoardSlugReadAccess_RESTContract(t *testing.T) {
 						"",
 					)
 				})
-				t.Run("existing durable project remains readable", func(t *testing.T) {
+				t.Run("ownerless durable project created directly in auth-disabled database", func(t *testing.T) {
 					assertSlugBoardReadSuccess(
 						t,
 						client,
@@ -290,6 +291,57 @@ func TestBoardSlugReadAccess_RESTContract(t *testing.T) {
 						"",
 					)
 				})
+			})
+		}
+	})
+
+	t.Run("normally owned durable project after full-to-anonymous transition", func(t *testing.T) {
+		fullServer, sqlDB, cleanup := newTestHTTPServer(t, "full")
+		defer cleanup()
+
+		ownerClient := newCookieClient(t)
+		ownerJSON := bootstrapUserClient(
+			t,
+			ownerClient,
+			fullServer.URL,
+			"Owner",
+			"board-slug-access-mode-transition-owner@example.com",
+			"password123",
+		)
+		ownerID := int64(ownerJSON["id"].(float64))
+		ctxOwner := store.WithUserID(context.Background(), ownerID)
+		st := store.New(sqlDB, nil)
+
+		durableProject, err := st.CreateProject(ctxOwner, "Full-to-Anonymous Durable")
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+		seedSlugBoardTodo(
+			t,
+			st,
+			ctxOwner,
+			durableProject.ID,
+			"full-to-anonymous durable todo",
+			store.ModeFull,
+		)
+
+		anonymousServer := httptest.NewServer(NewServer(st, Options{
+			MaxRequestBody: 1 << 20,
+			ScrumboyMode:   "anonymous",
+		}))
+		defer anonymousServer.Close()
+
+		for _, route := range slugBoardReadRoutes {
+			route := route
+			t.Run(route.name, func(t *testing.T) {
+				assertSlugBoardReadNotFound(
+					t,
+					anonymousServer.Client(),
+					anonymousServer.URL,
+					route,
+					durableProject.Slug,
+					"",
+				)
 			})
 		}
 	})

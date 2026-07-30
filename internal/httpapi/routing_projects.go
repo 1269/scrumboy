@@ -239,7 +239,7 @@ func (s *Server) handleProjectsProjectReads(w http.ResponseWriter, r *http.Reque
 			writeValidationError(w, "invalid assignee", "invalid_assignee", map[string]any{"field": "assignee"})
 			return true
 		}
-		sprintFilter, err := s.parseSprintFilterFromQuery(r, projectID)
+		sprintFilter, err := s.parseSprintFilterFromQuery(r)
 		if err != nil {
 			writeValidationError(w, err.Error(), "invalid_sprint_id", map[string]any{"field": "sprintId"})
 			return true
