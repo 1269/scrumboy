@@ -1,0 +1,501 @@
+package mcp_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"reflect"
+	"sort"
+	"testing"
+
+	"scrumboy/internal/store"
+)
+
+type boardGetTransportFixture struct {
+	serverURL string
+	client    *http.Client
+	slug      string
+}
+
+func newBoardGetTransportFixture(t *testing.T) boardGetTransportFixture {
+	t.Helper()
+	ts, sqlDB, cleanup := newTestServer(t, "full")
+	t.Cleanup(cleanup)
+
+	client := newCookieClient(t, ts)
+	bootstrapUser(t, client, ts.URL)
+	resp := doJSON(t, client, http.MethodPost, ts.URL+"/api/projects", map[string]any{
+		"name": "Phase 7 Transport Board",
+	}, &map[string]any{})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create project status=%d", resp.StatusCode)
+	}
+	slug := projectSlugByName(t, sqlDB, "Phase 7 Transport Board")
+	projectID := projectIDBySlug(t, sqlDB, slug)
+	st := store.New(sqlDB, nil)
+	ctx := store.WithUserID(t.Context(), firstUserID(t, sqlDB))
+	for i := 0; i < 3; i++ {
+		if _, err := st.CreateTodo(ctx, projectID, store.CreateTodoInput{
+			Title:     "Phase 7 paged todo",
+			ColumnKey: store.DefaultColumnBacklog,
+		}, store.ModeFull); err != nil {
+			t.Fatalf("create todo %d: %v", i, err)
+		}
+	}
+	return boardGetTransportFixture{
+		serverURL: ts.URL,
+		client:    client,
+		slug:      slug,
+	}
+}
+
+func sortedMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func TestMCPBoardGetTransportContract_LegacySuccessEnvelope(t *testing.T) {
+	fixture := newBoardGetTransportFixture(t)
+
+	resp, out := doMCP(t, fixture.client, fixture.serverURL+"/mcp", map[string]any{
+		"tool": "board_get",
+		"input": map[string]any{
+			"projectSlug": fixture.slug,
+			"limit":       2,
+		},
+	})
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body=%#v", resp.StatusCode, out)
+	}
+	if got, want := sortedMapKeys(out), []string{"data", "meta", "ok"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("top-level keys = %v, want %v", got, want)
+	}
+	if out["ok"] != true {
+		t.Fatalf("ok = %#v, want true", out["ok"])
+	}
+	data := out["data"].(map[string]any)
+	if got, want := sortedMapKeys(data), []string{"columns", "project"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("data keys = %v, want %v", got, want)
+	}
+	project := data["project"].(map[string]any)
+	if got, want := sortedMapKeys(project), []string{"name", "projectSlug", "role"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("project keys = %v, want %v", got, want)
+	}
+	columns := data["columns"].([]any)
+	backlog := boardColumnByKey(t, columns, store.DefaultColumnBacklog)
+	if got, want := sortedMapKeys(backlog), []string{"isDone", "items", "key", "name"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("column keys = %v, want %v", got, want)
+	}
+	items := backlog["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("backlog items = %#v, want first page of 2", items)
+	}
+	if got, want := sortedMapKeys(items[0].(map[string]any)), []string{
+		"assigneeUserId",
+		"body",
+		"columnKey",
+		"createdAt",
+		"doneAt",
+		"estimationPoints",
+		"localId",
+		"projectSlug",
+		"sprintId",
+		"tags",
+		"title",
+		"updatedAt",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("todo keys = %v, want %v", got, want)
+	}
+	meta := out["meta"].(map[string]any)
+	if got, want := sortedMapKeys(meta), []string{"hasMoreByColumn", "nextCursorByColumn", "totalCountByColumn"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("meta keys = %v, want %v", got, want)
+	}
+	if meta["hasMoreByColumn"].(map[string]any)[store.DefaultColumnBacklog] != true {
+		t.Fatalf("backlog hasMore = %#v", meta["hasMoreByColumn"])
+	}
+	if _, ok := meta["nextCursorByColumn"].(map[string]any)[store.DefaultColumnBacklog].(string); !ok {
+		t.Fatalf("backlog cursor = %#v", meta["nextCursorByColumn"])
+	}
+	if meta["totalCountByColumn"].(map[string]any)[store.DefaultColumnBacklog] != float64(3) {
+		t.Fatalf("backlog total = %#v", meta["totalCountByColumn"])
+	}
+}
+
+func TestMCPBoardGetTransportContract_LegacyErrorEnvelope(t *testing.T) {
+	fixture := newBoardGetTransportFixture(t)
+
+	resp, out := doMCP(t, fixture.client, fixture.serverURL+"/mcp", map[string]any{
+		"tool": "board_get",
+		"input": map[string]any{
+			"projectSlug": fixture.slug,
+			"sort":        "invalid",
+		},
+	})
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, body=%#v", resp.StatusCode, out)
+	}
+	if got, want := sortedMapKeys(out), []string{"error", "ok"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("top-level keys = %v, want %v", got, want)
+	}
+	if out["ok"] != false {
+		t.Fatalf("ok = %#v, want false", out["ok"])
+	}
+	errObj := out["error"].(map[string]any)
+	if got, want := sortedMapKeys(errObj), []string{"code", "details", "message"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("error keys = %v, want %v", got, want)
+	}
+	if errObj["code"] != "VALIDATION_ERROR" ||
+		errObj["message"] != "invalid sort" ||
+		!reflect.DeepEqual(errObj["details"], map[string]any{"field": "sort"}) {
+		t.Fatalf("error = %#v", errObj)
+	}
+}
+
+func TestMCPBoardGetTransportContract_JSONRPCSuccessDropsPaginationMetadata(t *testing.T) {
+	fixture := newBoardGetTransportFixture(t)
+
+	resp, out := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "phase-7-id",
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "board_get",
+			"arguments": map[string]any{
+				"projectSlug": fixture.slug,
+				"limit":       2,
+			},
+		},
+	})
+
+	if resp.StatusCode != http.StatusOK || out["id"] != "phase-7-id" {
+		t.Fatalf("status/id = %d/%#v, body=%#v", resp.StatusCode, out["id"], out)
+	}
+	result := out["result"].(map[string]any)
+	if got, want := sortedMapKeys(result), []string{"content", "structuredContent"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("result keys = %v, want %v", got, want)
+	}
+	structured := result["structuredContent"].(map[string]any)
+	if got, want := sortedMapKeys(structured), []string{"columns", "project"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("structuredContent keys = %v, want current board-only shape %v", got, want)
+	}
+	for _, omitted := range []string{"nextCursorByColumn", "hasMoreByColumn", "totalCountByColumn", "meta"} {
+		if _, ok := structured[omitted]; ok {
+			t.Fatalf("structuredContent unexpectedly exposes %q: %#v", omitted, structured)
+		}
+	}
+	content := result["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %#v, want one item", content)
+	}
+	item := content[0].(map[string]any)
+	if !reflect.DeepEqual(sortedMapKeys(item), []string{"text", "type"}) || item["type"] != "text" {
+		t.Fatalf("content item = %#v", item)
+	}
+	var textData map[string]any
+	if err := json.Unmarshal([]byte(item["text"].(string)), &textData); err != nil {
+		t.Fatalf("decode text content: %v", err)
+	}
+	if !reflect.DeepEqual(textData, structured) {
+		t.Fatalf("text JSON != structured content\ntext=%#v\nstructured=%#v", textData, structured)
+	}
+}
+
+func TestMCPBoardGetTransportContract_JSONRPCToolErrorLosesLegacyDetails(t *testing.T) {
+	fixture := newBoardGetTransportFixture(t)
+
+	resp, out := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      71,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "board_get",
+			"arguments": map[string]any{
+				"projectSlug": fixture.slug,
+				"sort":        "invalid",
+			},
+		},
+	})
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body=%#v", resp.StatusCode, out)
+	}
+	result := out["result"].(map[string]any)
+	if got, want := sortedMapKeys(result), []string{"content", "isError"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("result keys = %v, want %v", got, want)
+	}
+	if result["isError"] != true {
+		t.Fatalf("isError = %#v, want true", result["isError"])
+	}
+	content := result["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["text"] != "invalid sort" {
+		t.Fatalf("content = %#v", content)
+	}
+	for _, absent := range []string{"structuredContent", "code", "details", "status"} {
+		if _, ok := result[absent]; ok {
+			t.Fatalf("JSON-RPC tool error unexpectedly exposes %q: %#v", absent, result)
+		}
+	}
+}
+
+func TestMCPBoardGetTransportContract_JSONRPCFullModeAuthBoundary(t *testing.T) {
+	fixture := newBoardGetTransportFixture(t)
+	payload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "board_get",
+			"arguments": map[string]any{"projectSlug": fixture.slug},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, fixture.serverURL+"/mcp/rpc", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
+
+	stateless := &http.Client{Transport: fixture.client.Transport}
+	resp, err := stateless.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized || len(body) != 0 {
+		t.Fatalf("status/body = %d/%q, want 401 with empty body", resp.StatusCode, string(body))
+	}
+	if got := resp.Header.Get("WWW-Authenticate"); got == "" {
+		t.Fatal("missing WWW-Authenticate challenge")
+	}
+}
+
+func TestMCPBoardGetTransportContract_LegacyCapabilityAndAuthBoundaries(t *testing.T) {
+	t.Run("full mode before bootstrap", func(t *testing.T) {
+		ts, _, cleanup := newTestServer(t, "full")
+		defer cleanup()
+
+		resp, out := doMCP(t, ts.Client(), ts.URL+"/mcp", map[string]any{
+			"tool":  "board_get",
+			"input": map[string]any{"projectSlug": "demo"},
+		})
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("status = %d, body=%#v", resp.StatusCode, out)
+		}
+		errObj := out["error"].(map[string]any)
+		if errObj["code"] != "CAPABILITY_UNAVAILABLE" ||
+			errObj["message"] != "board_get is unavailable before bootstrap" ||
+			!reflect.DeepEqual(errObj["details"], map[string]any{}) {
+			t.Fatalf("error = %#v", errObj)
+		}
+	})
+
+	t.Run("full mode signed out after bootstrap", func(t *testing.T) {
+		fixture := newBoardGetTransportFixture(t)
+
+		resp, out := doMCP(t, &http.Client{Transport: fixture.client.Transport}, fixture.serverURL+"/mcp", map[string]any{
+			"tool":  "board_get",
+			"input": map[string]any{"projectSlug": fixture.slug},
+		})
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d, body=%#v", resp.StatusCode, out)
+		}
+		errObj := out["error"].(map[string]any)
+		if errObj["code"] != "AUTH_REQUIRED" ||
+			errObj["message"] != "Sign-in required for this tool" ||
+			!reflect.DeepEqual(errObj["details"], map[string]any{}) {
+			t.Fatalf("error = %#v", errObj)
+		}
+	})
+
+	t.Run("anonymous mode", func(t *testing.T) {
+		ts, _, cleanup := newTestServer(t, "anonymous")
+		defer cleanup()
+
+		resp, out := doMCP(t, ts.Client(), ts.URL+"/mcp", map[string]any{
+			"tool":  "board_get",
+			"input": map[string]any{"projectSlug": "demo"},
+		})
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("status = %d, body=%#v", resp.StatusCode, out)
+		}
+		errObj := out["error"].(map[string]any)
+		if errObj["code"] != "CAPABILITY_UNAVAILABLE" ||
+			errObj["message"] != "board_get is unavailable in anonymous mode" ||
+			!reflect.DeepEqual(errObj["details"], map[string]any{}) {
+			t.Fatalf("error = %#v", errObj)
+		}
+	})
+}
+
+func TestMCPBoardGetTransportContract_JSONRPCAnonymousModeIsToolError(t *testing.T) {
+	ts, _, cleanup := newTestServer(t, "anonymous")
+	defer cleanup()
+
+	resp, out := doJSONRPC(t, ts.Client(), ts.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "board_get",
+			"arguments": map[string]any{"projectSlug": "demo"},
+		},
+	})
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body=%#v", resp.StatusCode, out)
+	}
+	result := out["result"].(map[string]any)
+	if result["isError"] != true {
+		t.Fatalf("result = %#v, want tool error", result)
+	}
+	content := result["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["text"] != "board_get is unavailable in anonymous mode" {
+		t.Fatalf("content = %#v", content)
+	}
+}
+
+func TestMCPBoardGetTransportContract_CanonicalAndAliasEquivalent(t *testing.T) {
+	fixture := newBoardGetTransportFixture(t)
+
+	var legacyResults []map[string]any
+	for _, name := range []string{"board_get", "board.get"} {
+		resp, out := doMCP(t, fixture.client, fixture.serverURL+"/mcp", map[string]any{
+			"tool":  name,
+			"input": map[string]any{"projectSlug": fixture.slug, "limit": 1},
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s legacy status=%d body=%#v", name, resp.StatusCode, out)
+		}
+		legacyResults = append(legacyResults, out)
+	}
+	if !reflect.DeepEqual(legacyResults[0], legacyResults[1]) {
+		t.Fatalf("legacy canonical/alias differ\ncanonical=%#v\nalias=%#v", legacyResults[0], legacyResults[1])
+	}
+
+	var rpcResults []map[string]any
+	for _, name := range []string{"board_get", "board.get"} {
+		_, out := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name":      name,
+				"arguments": map[string]any{"projectSlug": fixture.slug, "limit": 1},
+			},
+		})
+		rpcResults = append(rpcResults, out["result"].(map[string]any))
+	}
+	if !reflect.DeepEqual(rpcResults[0], rpcResults[1]) {
+		t.Fatalf("JSON-RPC canonical/alias differ\ncanonical=%#v\nalias=%#v", rpcResults[0], rpcResults[1])
+	}
+}
+
+func TestMCPBoardGetTransportContract_CanonicalAndAliasValidationEquivalent(t *testing.T) {
+	fixture := newBoardGetTransportFixture(t)
+
+	var (
+		legacyStatuses []int
+		legacyResults  []map[string]any
+	)
+	for _, name := range []string{"board_get", "board.get"} {
+		resp, out := doMCP(t, fixture.client, fixture.serverURL+"/mcp", map[string]any{
+			"tool":  name,
+			"input": map[string]any{"projectSlug": fixture.slug, "sort": "invalid"},
+		})
+		legacyStatuses = append(legacyStatuses, resp.StatusCode)
+		legacyResults = append(legacyResults, out)
+	}
+	if legacyStatuses[0] != http.StatusBadRequest ||
+		legacyStatuses[1] != legacyStatuses[0] ||
+		!reflect.DeepEqual(legacyResults[0], legacyResults[1]) {
+		t.Fatalf("legacy validation differs: statuses=%v results=%#v", legacyStatuses, legacyResults)
+	}
+
+	var rpcResults []map[string]any
+	for _, name := range []string{"board_get", "board.get"} {
+		_, out := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name":      name,
+				"arguments": map[string]any{"projectSlug": fixture.slug, "sort": "invalid"},
+			},
+		})
+		rpcResults = append(rpcResults, out["result"].(map[string]any))
+	}
+	if !reflect.DeepEqual(rpcResults[0], rpcResults[1]) {
+		t.Fatalf("JSON-RPC validation differs\ncanonical=%#v\nalias=%#v", rpcResults[0], rpcResults[1])
+	}
+}
+
+func TestMCPBoardGetTransportContract_ToolsListAdvertisesCanonicalWithoutSort(t *testing.T) {
+	fixture := newBoardGetTransportFixture(t)
+
+	_, out := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/list",
+	})
+	tools := out["result"].(map[string]any)["tools"].([]any)
+	var board map[string]any
+	for _, raw := range tools {
+		candidate := raw.(map[string]any)
+		if candidate["name"] == "board.get" {
+			t.Fatalf("legacy alias advertised: %#v", candidate)
+		}
+		if candidate["name"] == "board_get" {
+			board = candidate
+		}
+	}
+	if board == nil {
+		t.Fatal("canonical board_get missing from tools/list")
+	}
+	properties := board["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := properties["sort"]; ok {
+		t.Fatalf("Phase 7 current contract unexpectedly advertises runtime sort: %#v", properties["sort"])
+	}
+}
+
+func TestMCPBoardGetTransportContract_RuntimeSortWorksDespiteDiscoveryOmission(t *testing.T) {
+	fixture := newBoardGetTransportFixture(t)
+
+	for _, sortOrder := range []string{"newest", "oldest"} {
+		resp, out := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      sortOrder,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "board_get",
+				"arguments": map[string]any{
+					"projectSlug": fixture.slug,
+					"sort":        sortOrder,
+				},
+			},
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("sort=%s status=%d body=%#v", sortOrder, resp.StatusCode, out)
+		}
+		result := out["result"].(map[string]any)
+		if result["isError"] == true || result["structuredContent"] == nil {
+			t.Fatalf("sort=%s result=%#v", sortOrder, result)
+		}
+	}
+}
