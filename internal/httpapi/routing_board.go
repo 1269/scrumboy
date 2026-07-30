@@ -391,12 +391,22 @@ func (s *Server) handleBoardLaneRoutes(w http.ResponseWriter, r *http.Request, r
 		afterA, afterB = store.ParseLaneCursor(afterCursor)
 	}
 
-	items, nextCursor, hasMore, err := s.store.ListTodosForBoardLane(ctx, project.ID, columnKey, limit, afterA, afterB, tag, search, assigneeFilter, sprintFilter, sortOrder)
+	result, err := s.laneReads.Read(ctx, pc, boardapp.LaneQuery{
+		ColumnKey:      columnKey,
+		Limit:          limit,
+		AfterA:         afterA,
+		AfterB:         afterB,
+		TagFilter:      tag,
+		SearchFilter:   search,
+		AssigneeFilter: assigneeFilter,
+		SprintFilter:   sprintFilter,
+		SortOrder:      sortOrder,
+	})
 	if err != nil {
 		writeStoreErr(w, err, true)
 		return true
 	}
-	writeJSON(w, http.StatusOK, lanePageToJSON(items, nextCursor, hasMore))
+	writeJSON(w, http.StatusOK, lanePageToJSON(result.Items, result.NextCursor, result.HasMore))
 	return true
 }
 
