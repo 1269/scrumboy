@@ -447,7 +447,12 @@ Conventions:
 - **Input:** `projectSlug` (required); optional `tag`, `search`, `assignee`, `sprintId` (sprint row id; must belong to the project when set); optional `limit` (default 20, max 100); optional `cursorByColumn` (map column key → opaque cursor string). Omitting `sprintId` applies no sprint-based filter on the board query (internal mode `none`).
 - **Tag filter:** on durable projects, `tag` is matched on the same grouping key `tags_listProject` labels entries with, so filtering by `make-space` returns todos carrying either the canonical row or a legacy `make space` row and filtered counts agree with the chip counts. Temporary boards keep exact stored-name matching (row-level chips): the filter is not rewritten through `TagGroupKey`, so a `make space` chip selects only that row. A `tag` that matches no row returns an empty board rather than an unfiltered one.
 - **Assignee filter:** `assignee` is a **string**. Use `"me"` for the authenticated caller, `"unassigned"` for todos with no assignee, or a positive user ID encoded as a string such as `"42"`. Sentinels are case-sensitive after surrounding whitespace is trimmed. Unknown/non-member positive IDs return an empty board; malformed values return `VALIDATION_ERROR` with `field: "assignee"`. A JSON number such as `42` is invalid.
-- **Output:** `data.project` (`projectSlug`, `name`, `role`), `data.columns` (each: `key`, `name`, `isDone`, `items` as todo-shaped objects).
+- **Output:** `data.project` (`projectSlug`, `name`, `role`), `data.columns`
+  (each: `key`, `name`, `isDone`, `items` as todo-shaped objects).
+  Successful project and todo `projectSlug` fields always use the persisted
+  canonical slug. Lookup accepts normalization-equivalent input such as
+  uppercase or surrounding whitespace, but the response does not echo that
+  spelling.
 - **Meta:** `nextCursorByColumn`, `hasMoreByColumn`, `totalCountByColumn` (per column key). See **Board pagination** below.
 - **Temporary Board activity:** after an expiring board is completely loaded,
   MCP makes a final, throttled best-effort activity refresh. A maintenance

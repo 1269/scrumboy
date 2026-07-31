@@ -357,6 +357,12 @@ A valid unknown or non-member user ID returns an empty board.
 orders items within each lane by creation time with a stable ID tie-break.
 Omit `sort` to preserve manual drag-rank order.
 
+`projectSlug` is a lookup identifier, not a request-echo field. Lookup accepts
+normalization-equivalent values such as uppercase or surrounding whitespace.
+On success, `project.projectSlug` and every returned todo's `projectSlug` use
+the persisted canonical slug over legacy and JSON-RPC transports, including
+calls made through the permanent `board.get` alias.
+
 For an expiring Temporary Board, `board_get` performs its throttled activity
 refresh only after the workflow and every requested lane/count have loaded.
 That refresh is best-effort maintenance: a failure is logged by the server,

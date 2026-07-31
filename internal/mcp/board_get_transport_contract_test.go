@@ -224,6 +224,85 @@ func TestMCPBoardGetTransportContract_JSONRPCSuccessExposesPaginationMetadata(t 
 	}
 }
 
+func TestMCPBoardGetTransportContract_CanonicalSlugIdentityMatrix(t *testing.T) {
+	fixture := newBoardGetTransportFixture(t)
+	suppliedSlugs := []string{
+		fixture.slug,
+		strings.ToUpper(fixture.slug),
+		"Phase-7-Transport-Board",
+		"  " + strings.ToUpper(fixture.slug) + "  ",
+	}
+	invocations := []struct {
+		name     string
+		toolName string
+		jsonRPC  bool
+	}{
+		{name: "legacy canonical", toolName: "board_get"},
+		{name: "legacy alias", toolName: "board.get"},
+		{name: "json-rpc canonical", toolName: "board_get", jsonRPC: true},
+		{name: "json-rpc alias", toolName: "board.get", jsonRPC: true},
+	}
+
+	for _, invocation := range invocations {
+		for _, supplied := range suppliedSlugs {
+			t.Run(invocation.name+"/"+supplied, func(t *testing.T) {
+				var data map[string]any
+				if invocation.jsonRPC {
+					resp, out := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"method":  "tools/call",
+						"params": map[string]any{
+							"name": invocation.toolName,
+							"arguments": map[string]any{
+								"projectSlug": supplied,
+							},
+						},
+					})
+					if resp.StatusCode != http.StatusOK || out["error"] != nil {
+						t.Fatalf("JSON-RPC status/body = %d/%#v, want success", resp.StatusCode, out)
+					}
+					result := out["result"].(map[string]any)
+					if result["isError"] == true {
+						t.Fatalf("JSON-RPC result = %#v, want tool success", result)
+					}
+					data = result["structuredContent"].(map[string]any)
+				} else {
+					resp, out := doMCP(t, fixture.client, fixture.serverURL+"/mcp", map[string]any{
+						"tool": invocation.toolName,
+						"input": map[string]any{
+							"projectSlug": supplied,
+						},
+					})
+					if resp.StatusCode != http.StatusOK || out["ok"] != true {
+						t.Fatalf("legacy status/body = %d/%#v, want success", resp.StatusCode, out)
+					}
+					data = out["data"].(map[string]any)
+				}
+
+				project := data["project"].(map[string]any)
+				if project["projectSlug"] != fixture.slug {
+					t.Fatalf("projectSlug = %#v, want canonical %q for supplied %q", project["projectSlug"], fixture.slug, supplied)
+				}
+				itemCount := 0
+				for _, rawColumn := range data["columns"].([]any) {
+					column := rawColumn.(map[string]any)
+					for _, rawItem := range column["items"].([]any) {
+						item := rawItem.(map[string]any)
+						itemCount++
+						if item["projectSlug"] != fixture.slug {
+							t.Fatalf("todo projectSlug = %#v, want canonical %q for supplied %q", item["projectSlug"], fixture.slug, supplied)
+						}
+					}
+				}
+				if itemCount == 0 {
+					t.Fatal("identity matrix fixture returned no todos")
+				}
+			})
+		}
+	}
+}
+
 func TestMCPBoardGetTransportContract_JSONRPCPaginationContinuesFromReturnedCursor(t *testing.T) {
 	fixture := newBoardGetTransportFixture(t)
 

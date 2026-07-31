@@ -303,7 +303,7 @@ func toolCatalogDefinitions() map[string]mcpToolDef {
 		},
 		"board_get": {
 			Name:        "board_get",
-			Description: "Get board columns and paginated todo items for a project board view.",
+			Description: "Get board columns and paginated todo items for a project board view. Returned projectSlug fields use the stored canonical slug.",
 			InputSchema: jsonSchema("object", map[string]any{
 				"projectSlug": jsonProp("string", "Project identifier (slug)"),
 				"tag":         jsonProp("string", "Filter by tag"),

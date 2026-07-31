@@ -252,10 +252,11 @@ func TestBoardGetContract_SprintSemantics(t *testing.T) {
 	})
 }
 
-func TestBoardGetContract_SlugLookupAndEcho(t *testing.T) {
+func TestBoardGetContract_SlugLookupAndCanonicalProjection(t *testing.T) {
 	for _, supplied := range []string{
 		"phase-7-board",
 		"PHASE-7-BOARD",
+		"Phase-7-Board",
 		"  PHASE-7-BOARD  ",
 	} {
 		t.Run(supplied, func(t *testing.T) {
@@ -275,12 +276,12 @@ func TestBoardGetContract_SlugLookupAndEcho(t *testing.T) {
 				t.Fatalf("lookup received %q, want exact caller input %q", got, supplied)
 			}
 			project := data.(map[string]any)["project"].(boardProjectItem)
-			if project.ProjectSlug != supplied {
-				t.Fatalf("project slug = %q, want echoed input %q", project.ProjectSlug, supplied)
+			if project.ProjectSlug != h.Project.Slug {
+				t.Fatalf("project slug = %q, want stored canonical slug %q", project.ProjectSlug, h.Project.Slug)
 			}
 			columns := data.(map[string]any)["columns"].([]boardColumnItem)
-			if len(columns[0].Items) != 1 || columns[0].Items[0].ProjectSlug != supplied {
-				t.Fatalf("todo slug was not echoed: %#v", columns[0].Items)
+			if len(columns[0].Items) != 1 || columns[0].Items[0].ProjectSlug != h.Project.Slug {
+				t.Fatalf("todo slug was not canonical: %#v", columns[0].Items)
 			}
 		})
 	}

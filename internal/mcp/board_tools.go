@@ -115,6 +115,9 @@ func (a *Adapter) handleBoardGet(ctx context.Context, input any) (any, map[strin
 		return nil, nil, mapMCPBoardReadError(readErr)
 	}
 
+	// Lookup accepts normalization-equivalent input, but successful output uses
+	// the persisted identity consistently for the project and every todo.
+	projectSlug := result.Project.Slug
 	columns := make([]boardColumnItem, 0, len(result.Columns))
 	nextCursorByColumn := make(map[string]any, len(result.Columns))
 	hasMoreByColumn := make(map[string]bool, len(result.Columns))
@@ -122,7 +125,7 @@ func (a *Adapter) handleBoardGet(ctx context.Context, input any) (any, map[strin
 	for _, lane := range result.Columns {
 		items := make([]todoItem, 0, len(lane.Todos))
 		for _, todo := range lane.Todos {
-			items = append(items, todoToItem(in.ProjectSlug, todo))
+			items = append(items, todoToItem(projectSlug, todo))
 		}
 		columns = append(columns, boardColumnItem{
 			Key:    lane.Workflow.Key,
@@ -142,7 +145,7 @@ func (a *Adapter) handleBoardGet(ctx context.Context, input any) (any, map[strin
 
 	return map[string]any{
 			"project": boardProjectItem{
-				ProjectSlug: in.ProjectSlug,
+				ProjectSlug: projectSlug,
 				Name:        result.Project.Name,
 				Role:        result.Role.String(),
 			},

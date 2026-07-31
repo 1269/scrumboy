@@ -8,6 +8,16 @@
 
 - **Wrap lanes into rows** - Settings → Customization gains an opt-in Wrap lanes into rows toggle (off by default). On wide screens (≥1301px), boards with more than five lanes split into two equal rows of `⌊n / 2⌋` columns (for example 8 → 4+4, 10 → 5+5); an odd leftover lane sits alone on a third row at normal width. Signed-in users sync via `/api/user/preferences`; hydration resets to off before applying the server value so a previous browser user's local preference cannot leak across accounts. Anonymous users keep the choice in localStorage only. Tablet/mobile board layout is unchanged.
 
+### Changed
+
+- **MCP `board_get` returns canonical slug identity** - Successful
+  `project.projectSlug` and todo `projectSlug` fields now use the persisted
+  canonical slug over legacy and JSON-RPC transports and the permanent
+  `board.get` alias. Lookup still accepts uppercase or whitespace-padded
+  equivalents, but the response no longer echoes that noncanonical spelling.
+  Clients that compared the submitted value byte-for-byte should use the
+  returned canonical identifier instead.
+
 ### Fixed
 
 - **Board columns fill width when fewer than five lanes (PR #201)** - `.board` used a hardcoded five-column grid, so workflows with fewer lanes left empty tracks on the right. Switched to `auto-fit` so existing columns stretch to fill the row.
