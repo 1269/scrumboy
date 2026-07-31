@@ -125,6 +125,12 @@ func TestBoardLegacyRead_RESTCombinedFiltersUnpagedResponseContract(t *testing.T
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET legacy board: status=%d body=%s", resp.StatusCode, string(body))
 	}
+	if got := resp.Header.Get("Deprecation"); got != "" {
+		t.Fatalf("Deprecation header = %q, want no deprecation signal", got)
+	}
+	if got := resp.Header.Get("Sunset"); got != "" {
+		t.Fatalf("Sunset header = %q, want no scheduled removal", got)
+	}
 
 	if board.Project.ID != project.ID || board.Project.Slug != project.Slug {
 		t.Fatalf("unexpected project: %+v", board.Project)
@@ -181,6 +187,70 @@ func TestBoardLegacyRead_RESTCombinedFiltersUnpagedResponseContract(t *testing.T
 	}
 	if _, ok := raw["columnsMeta"]; ok {
 		t.Fatalf("legacy response unexpectedly contains columnsMeta: %s", string(body))
+	}
+
+	// A client that chooses to migrate can discover project.slug from the
+	// compatibility response, then aggregate the initial slug response and
+	// every lane cursor page to reproduce the same ordered todo set.
+	query.Set("limitPerLane", "5")
+	var paged boardReadContractResponse
+	resp, body = doJSON(
+		t,
+		client,
+		http.MethodGet,
+		ts.URL+"/api/board/"+board.Project.Slug+"?"+query.Encode(),
+		nil,
+		&paged,
+	)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET slug board: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	query.Del("limitPerLane")
+	query.Set("limit", "5")
+	var reconstructedIDs []int64
+	for _, column := range paged.ColumnOrder {
+		for _, todo := range paged.Columns[column.Key] {
+			reconstructedIDs = append(reconstructedIDs, todo.ID)
+		}
+
+		meta, ok := paged.ColumnsMeta[column.Key]
+		if !ok {
+			t.Fatalf("slug response missing columnsMeta for lane %q", column.Key)
+		}
+		hasMore := meta.HasMore
+		nextCursor := meta.NextCursor
+		for hasMore {
+			if nextCursor == nil || *nextCursor == "" {
+				t.Fatalf("lane %q hasMore without nextCursor", column.Key)
+			}
+			query.Set("afterCursor", *nextCursor)
+
+			var page boardLaneReadContractResponse
+			resp, body = doJSON(
+				t,
+				client,
+				http.MethodGet,
+				ts.URL+"/api/board/"+board.Project.Slug+"/lanes/"+url.PathEscape(column.Key)+"?"+query.Encode(),
+				nil,
+				&page,
+			)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET slug lane %q: status=%d body=%s", column.Key, resp.StatusCode, string(body))
+			}
+			for _, todo := range page.Items {
+				reconstructedIDs = append(reconstructedIDs, todo.ID)
+			}
+			hasMore = page.HasMore
+			nextCursor = page.NextCursor
+		}
+	}
+	if !slices.Equal(reconstructedIDs, gotAllIDs) {
+		t.Fatalf(
+			"slug page reconstruction IDs = %v, want legacy ordered IDs %v",
+			reconstructedIDs,
+			gotAllIDs,
+		)
 	}
 }
 

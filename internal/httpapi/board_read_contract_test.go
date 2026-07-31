@@ -23,6 +23,7 @@ type boardReadContractResponse struct {
 		Name string `json:"name"`
 	} `json:"tags"`
 	Columns map[string][]struct {
+		ID    int64  `json:"id"`
 		Title string `json:"title"`
 	} `json:"columns"`
 	ColumnsMeta map[string]struct {
@@ -34,6 +35,7 @@ type boardReadContractResponse struct {
 
 type boardLaneReadContractResponse struct {
 	Items []struct {
+		ID    int64  `json:"id"`
 		Title string `json:"title"`
 	} `json:"items"`
 	NextCursor *string `json:"nextCursor"`

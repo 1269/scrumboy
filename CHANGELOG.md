@@ -10,6 +10,13 @@
 
 ### Changed
 
+- **Numeric REST board compatibility is explicit** -
+  `GET /api/projects/{id}/board` remains a supported, unpaged compatibility
+  endpoint with no deprecation or scheduled removal. New clients should prefer
+  the paged slug board routes; the API documentation now describes slug
+  discovery and exact lane-page aggregation for clients that choose to
+  migrate. Runtime route behavior is unchanged.
+
 - **MCP `board_get` validation/access precedence is explicit** - Existing
   behavior is now documented and protected as a tiered contract. Input shape,
   required slug, per-column limit, assignee grammar/type, and sort validation

@@ -612,11 +612,26 @@ The browser REST API accepts the same assignee grammar on:
 
 - `GET /api/board/{slug}`
 - `GET /api/board/{slug}/lanes/{status}`
-- `GET /api/projects/{id}/board` (legacy full-board route)
+- `GET /api/projects/{id}/board` (supported compatibility full-board route)
 
 Use the `assignee` query parameter with `me`, `unassigned`, or a positive user ID string. Surrounding whitespace is trimmed; sentinels are otherwise case-sensitive. Invalid values return HTTP **400** with code `VALIDATION_ERROR`, `details.reason: "invalid_assignee"`, and `details.field: "assignee"`—they never disable the filter or return an unfiltered board. `me` also returns that validation error when the REST request has no authenticated actor. A valid unknown/non-member user ID returns an empty board without revealing membership.
 
 Assignee filtering is API/MCP-only in this release. The SPA router and board filter controls do not yet preserve or apply `?assignee=...` from browser URLs.
+
+---
+
+## REST: Board read compatibility and migration
+
+`GET /api/projects/{id}/board` is a supported compatibility endpoint in the current unversioned REST API. It is **not deprecated**, has no scheduled removal, and intentionally returns the complete matching board without `columnsMeta`. New clients should prefer the bounded, slug-based board reads:
+
+- `GET /api/board/{slug}` returns the initial page for every lane plus per-lane `columnsMeta`.
+- `GET /api/board/{slug}/lanes/{status}` follows a lane's opaque `nextCursor`.
+
+Clients can obtain a project's numeric `id` and canonical `slug` together from `GET /api/projects` or project creation. The numeric board response also includes `project.slug`, allowing an existing client to migrate without a separate lookup.
+
+To reproduce the numeric endpoint's unpaged `columns` result, pass the same `tag`, `search`, `assignee`, `sprintId`, and `sort` values to the initial slug request and every lane request. For each lane in `columnOrder`, append its initial items, then request lane pages with `afterCursor=columnsMeta[status].nextCursor` until `hasMore` is false. Preserve page order and do not parse cursor values. Clients may then discard the pagination metadata or adopt the paged contract directly.
+
+The numeric compatibility route is available only in Full Mode and remains hidden in Anonymous Mode. Slug board routes retain their existing Durable, active Temporary Board, and Anonymous Board access behavior.
 
 ---
 

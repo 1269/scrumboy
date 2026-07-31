@@ -220,6 +220,10 @@ func (s *Server) handleProjectsProjectItem(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleProjectsProjectReads(w http.ResponseWriter, r *http.Request, rest []string, projectID int64) bool {
 	if len(rest) == 2 && rest[1] == "board" && r.Method == http.MethodGet {
+		// This is a supported compatibility endpoint. Its unpaged response is
+		// intentionally distinct from the preferred paged slug routes. Do not
+		// add deprecation or sunset signals without an approved API lifecycle
+		// policy and migration window.
 		ctx := s.requestContext(r)
 		prepared, err := s.boardReads.PrepareLegacy(ctx, boardapp.LegacyReadTarget{
 			ProjectID: projectID,
