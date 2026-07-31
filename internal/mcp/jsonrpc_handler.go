@@ -452,41 +452,74 @@ func (a *Adapter) handleJSONRPCToolsCall(w http.ResponseWriter, r *http.Request,
 	writeJSONRPCToolSuccessResult(w, req.ID, jsonRPCToolStructuredContent(params.Name, data, meta))
 }
 
-var boardGetJSONRPCMetadataKeys = [...]string{
-	"nextCursorByColumn",
-	"hasMoreByColumn",
-	"totalCountByColumn",
+var jsonRPCToolMetadataKeys = map[string][]string{
+	"system_getCapabilities": {
+		"adapterVersion",
+	},
+	"sprints_list": {
+		"unscheduledCount",
+	},
+	"dashboard_listTodos": {
+		"nextCursor",
+		"hasMore",
+	},
+	"board_get": {
+		"nextCursorByColumn",
+		"hasMoreByColumn",
+		"totalCountByColumn",
+	},
 }
 
 // jsonRPCToolStructuredContent composes transport-specific structured output.
 //
-// Handler metadata remains a legacy-envelope concern for all tools except
-// board_get. Board pagination is part of the usable JSON-RPC result because a
-// client cannot continue paging without the returned per-column cursors. Keep
-// this explicit instead of generically merging metadata from every tool: those
-// contracts have not been characterized for additive JSON-RPC exposure.
+// Only explicitly approved public metadata is copied into JSON-RPC tool output.
+// The legacy transport continues to return the same fields under its meta
+// envelope. Keep this allowlist tool-specific: handler metadata is not
+// generically public over JSON-RPC.
+//
+// Approved fields are additive. Existing data owns its top-level keys, so a
+// collision never lets metadata replace a handler data value.
 func jsonRPCToolStructuredContent(toolName string, data any, meta map[string]any) any {
 	if canonical, ok := legacyToolAliases[toolName]; ok {
 		toolName = canonical
 	}
-	if toolName != "board_get" {
+	metadataKeys, approved := jsonRPCToolMetadataKeys[toolName]
+	if !approved {
 		return data
 	}
 
-	boardData, ok := data.(map[string]any)
+	structured, ok := cloneJSONRPCStructuredObject(data)
 	if !ok {
 		return data
 	}
-	structured := make(map[string]any, len(boardData)+len(boardGetJSONRPCMetadataKeys))
-	for key, value := range boardData {
-		structured[key] = value
-	}
-	for _, key := range boardGetJSONRPCMetadataKeys {
+	for _, key := range metadataKeys {
 		if value, exists := meta[key]; exists {
-			structured[key] = value
+			if _, collision := structured[key]; !collision {
+				structured[key] = value
+			}
 		}
 	}
 	return structured
+}
+
+func cloneJSONRPCStructuredObject(data any) (map[string]any, bool) {
+	if object, ok := data.(map[string]any); ok {
+		cloned := make(map[string]any, len(object))
+		for key, value := range object {
+			cloned[key] = value
+		}
+		return cloned, true
+	}
+
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return nil, false
+	}
+	var cloned map[string]any
+	if err := json.Unmarshal(encoded, &cloned); err != nil || cloned == nil {
+		return nil, false
+	}
+	return cloned, true
 }
 
 func requiredFieldNamesFromSchema(schema map[string]any) []string {

@@ -154,6 +154,10 @@ Malformed, invalid, expired, revoked, unbound, or wrong-resource Bearer tokens r
 **JSON-RPC:**
 
 - After authentication and `initialize`, call **`tools/list`** to receive the catalog (`name`, `description`, `inputSchema` per tool), implemented in `internal/mcp/jsonrpc_handler.go` / `internal/mcp/tool_catalog.go`.
+- Calling **`system_getCapabilities`** through `tools/call` returns the same
+  capability fields plus top-level **`adapterVersion`** in
+  `structuredContent` and its JSON text block. Legacy `/mcp` keeps
+  `adapterVersion` under `meta`.
 
 **Example `data` object** (structure from `internal/mcp/types.go` `capabilitiesData`; values below match a **full-mode, pre-bootstrap** instance as asserted in tests — your `serverMode`, `bootstrapAvailable`, and `implementedTools` may differ):
 
@@ -755,7 +759,15 @@ Non-exhaustive **`code`** values from `internal/mcp/errors.go`:
   `internal/mcp/jsonrpc_handler.go`). `INTERNAL` uses message `internal error`
   with `{}` details, and the legacy HTTP status is not copied into the tool
   result.
-- **Tool success**: **`result`** includes **`content`** (JSON text of payload) and **`structuredContent`** (parsed tool `data`).
+- **Tool success**: **`result`** includes **`content`** (JSON text of payload)
+  and **`structuredContent`** (parsed tool output). Most tools return their
+  legacy `data` unchanged. A narrow allowlist adds already-public legacy
+  metadata beside existing JSON-RPC data fields: `system_getCapabilities`
+  adds `adapterVersion`; `sprints_list` adds `unscheduledCount`; and
+  `dashboard_listTodos` adds `nextCursor` and `hasMore`. The JSON text and
+  structured object are equivalent. Unapproved metadata is omitted, and
+  existing data wins any top-level collision. Legacy `/mcp` keeps its
+  `{data,meta}` separation.
 - **`board_get` success**: `structuredContent` keeps `project` and `columns` at
   their existing locations and also includes `nextCursorByColumn`,
   `hasMoreByColumn`, and `totalCountByColumn`. The text content serializes the

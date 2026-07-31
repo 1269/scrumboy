@@ -133,7 +133,17 @@ All JSON-RPC **responses with a body** include `"jsonrpc": "2.0"` and preserve t
 }
 ```
 
-**`structuredContent`** is the tool’s result value (same conceptual payload as legacy `data`). **`content`** is a single MCP-style **text** block whose **`text`** field is JSON **string** of that same payload (from `json.Marshal` in `internal/mcp/jsonrpc_handler.go`).
+**`structuredContent`** is the tool’s result value (same conceptual payload as
+legacy `data`). **`content`** is a single MCP-style **text** block whose
+**`text`** field is a JSON **string** of that same payload (from `json.Marshal`
+in `internal/mcp/jsonrpc_handler.go`). Four tools also copy explicitly approved,
+public legacy metadata beside their existing data fields:
+`system_getCapabilities` adds `adapterVersion`; `sprints_list` adds
+`unscheduledCount`; `dashboard_listTodos` adds `nextCursor` and `hasMore`; and
+`board_get` adds `nextCursorByColumn`, `hasMoreByColumn`, and
+`totalCountByColumn`. The text block serializes the same enriched object.
+Unlisted handler metadata is not exposed over JSON-RPC. If an existing data
+field collides with an approved metadata name, the data field wins.
 
 **Tool execution error:**
 
@@ -411,7 +421,9 @@ Conventions:
 - **Purpose:** Describe server, auth, identities, pagination notes, and implemented tools.
 - **Input:** `{}` (use empty object for POST).
 - **Output:** `data` = capabilities object: `serverMode`, `auth`, `bootstrapAvailable`, `identity`, `pagination`, `implementedTools`, optional `plannedTools`.
-- **Meta:** e.g. `adapterVersion` (integer).
+- **Metadata:** legacy `/mcp` returns `meta.adapterVersion` (integer);
+  JSON-RPC returns `adapterVersion` beside the capability fields in
+  `structuredContent` and text content.
 - **Example (GET or POST):**  
   `POST /mcp` `{"tool":"system_getCapabilities","input":{}}`  
   → `ok: true`, `data.implementedTools` = full tool array.
@@ -479,7 +491,7 @@ Shared inputs: many tools use `projectSlug` only or `projectSlug` + `sprintId` (
 
 | Tool | Input | Output |
 |------|-------|--------|
-| `sprints_list` | `projectSlug` | `data.items` (sprint rows + counts), `meta.unscheduledCount` |
+| `sprints_list` | `projectSlug` | `data.items` (sprint rows + counts); legacy `meta.unscheduledCount`, JSON-RPC sibling `unscheduledCount` |
 | `sprints_get` | `projectSlug`, `sprintId` | `data.sprint` |
 | `sprints_getActive` | `projectSlug` | `data.sprint` - sprint object or JSON `null` when there is no active sprint |
 | `sprints_create` | `projectSlug`, `name`, `plannedStartAt`, `plannedEndAt` (ISO-8601 strings) | `data.sprint` |
@@ -542,7 +554,11 @@ Cross-project "my work" tools for the signed-in user. Not available in anonymous
 | `dashboard_getSummary` | optional `timezone` (IANA name; defaults to UTC for calendar-week boundaries) | `data.summary` - assigned counts/points, per-project sections with `activeSprint` (nullable) and `sprintSections`, completion/WIP/throughput analytics |
 | `dashboard_listTodos` | optional `limit` (default 20, max 100), `cursor`, `sort` (`activity` default, or `board`) | `data.items` (todos assigned to the caller across all projects) |
 
-**Meta (`dashboard_listTodos`):** `nextCursor` (opaque, `null` when there is no next page), `hasMore`. Cursor shape depends on `sort` (see the REST dashboard-todos section below for the underlying encoding); a cursor from one `sort` is not valid for the other.
+**Pagination metadata (`dashboard_listTodos`):** `nextCursor` (opaque, `null`
+when there is no next page) and `hasMore` are returned under legacy `meta` and
+beside `items` in JSON-RPC structured/text content. Cursor shape depends on
+`sort` (see the REST dashboard-todos section below for the underlying
+encoding); a cursor from one `sort` is not valid for the other.
 
 ### Metrics
 
