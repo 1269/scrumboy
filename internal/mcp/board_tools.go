@@ -68,6 +68,9 @@ func (a *Adapter) handleBoardGet(ctx context.Context, input any) (any, map[strin
 		return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "missing projectSlug", map[string]any{"field": "projectSlug"})
 	}
 
+	// Keep target-independent input validation before project access. Sprint
+	// membership and workflow/cursor validation remain in the prepared read
+	// below because those checks depend on the authorized project.
 	limit := in.Limit
 	if limit == 0 {
 		limit = 20
@@ -94,6 +97,8 @@ func (a *Adapter) handleBoardGet(ctx context.Context, input any) (any, map[strin
 		return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid sort", map[string]any{"field": "sort"})
 	}
 
+	// This is the target-dependent validation boundary: denied, missing, and
+	// expired projects mask later sprint and cursor errors as not found.
 	prepared, prepareErr := a.boardReads.Prepare(ctx, boardapp.MCPBoardReadTarget{
 		Slug: in.ProjectSlug,
 		Mode: a.storeMode(),

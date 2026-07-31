@@ -365,6 +365,22 @@ cross-project IDs both return `NOT_FOUND`. This stored-ID convention is shared
 by MCP sprint mutations, todo sprint assignment, and sprint-scoped metrics.
 REST board URLs intentionally use the project-local sprint number instead.
 
+`board_get` uses explicit validation tiers. Authentication/capability checks,
+input shape, required `projectSlug`, `limit`, assignee type/grammar, and `sort`
+are checked before project access because they are target-independent. Project
+access then precedes sprint resolution and workflow/cursor validation. As a
+result, a bad pre-access field still returns its exact `VALIDATION_ERROR` when
+the slug is denied, missing, or expired, while bad `sprintId` and
+`cursorByColumn` values are masked by `NOT_FOUND` for those targets. Cursor
+values are decoded in workflow order, so a malformed cursor for a later lane
+can follow successful reads of earlier lanes. The permanent `board.get` alias
+and both MCP transports use this same ordering.
+
+REST slug board reads intentionally differ: they resolve access before query
+validation, so an inaccessible REST target masks all later query errors. This
+is a first-error ordering difference, not a difference in permissions or
+validation grammar.
+
 `projectSlug` is a lookup identifier, not a request-echo field. Lookup accepts
 normalization-equivalent values such as uppercase or surrounding whitespace.
 On success, `project.projectSlug` and every returned todo's `projectSlug` use

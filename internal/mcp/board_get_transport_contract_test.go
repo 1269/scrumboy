@@ -610,6 +610,103 @@ func TestMCPBoardGetTransportContract_CanonicalAndAliasValidationEquivalent(t *t
 	}
 }
 
+func TestMCPBoardGetTransportContract_PrecedenceEquivalentForDeniedTarget(t *testing.T) {
+	ts, sqlDB, cleanup := newTestServer(t, "full")
+	defer cleanup()
+
+	ownerClient := newCookieClient(t, ts)
+	bootstrapUser(t, ownerClient, ts.URL)
+	resp := doJSON(t, ownerClient, http.MethodPost, ts.URL+"/api/projects", map[string]any{
+		"name": "Board Precedence Transport Target",
+	}, &map[string]any{})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create project status = %d", resp.StatusCode)
+	}
+	slug := projectSlugByName(t, sqlDB, "Board Precedence Transport Target")
+
+	st := store.New(sqlDB, nil)
+	outsider, err := st.CreateUser(t.Context(), "precedence-outsider@example.com", "password123", "Precedence Outsider")
+	if err != nil {
+		t.Fatalf("create outsider: %v", err)
+	}
+	outsiderClient := newSessionClientForUser(t, ts, st, outsider.ID)
+
+	tests := []struct {
+		name         string
+		input        map[string]any
+		legacyStatus int
+		wantError    map[string]any
+	}{
+		{
+			name: "target-independent sort validation precedes access",
+			input: map[string]any{
+				"projectSlug": slug,
+				"sort":        "invalid",
+			},
+			legacyStatus: http.StatusBadRequest,
+			wantError: map[string]any{
+				"code":    "VALIDATION_ERROR",
+				"message": "invalid sort",
+				"details": map[string]any{"field": "sort"},
+			},
+		},
+		{
+			name: "target-dependent sprint validation follows access",
+			input: map[string]any{
+				"projectSlug": slug,
+				"sprintId":    -1,
+			},
+			legacyStatus: http.StatusNotFound,
+			wantError: map[string]any{
+				"code":    "NOT_FOUND",
+				"message": "not found",
+				"details": map[string]any{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, toolName := range []string{"board_get", "board.get"} {
+				t.Run("legacy "+toolName, func(t *testing.T) {
+					resp, out := doMCP(t, outsiderClient, ts.URL+"/mcp", map[string]any{
+						"tool":  toolName,
+						"input": tt.input,
+					})
+					if resp.StatusCode != tt.legacyStatus {
+						t.Fatalf("status = %d, want %d; body = %#v", resp.StatusCode, tt.legacyStatus, out)
+					}
+					if got := out["error"].(map[string]any); !reflect.DeepEqual(got, tt.wantError) {
+						t.Fatalf("legacy error = %#v, want %#v", got, tt.wantError)
+					}
+				})
+
+				t.Run("JSON-RPC "+toolName, func(t *testing.T) {
+					resp, out := doJSONRPC(t, outsiderClient, ts.URL, map[string]any{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"method":  "tools/call",
+						"params": map[string]any{
+							"name":      toolName,
+							"arguments": tt.input,
+						},
+					})
+					if resp.StatusCode != http.StatusOK || out["error"] != nil {
+						t.Fatalf("JSON-RPC status/error = %d/%#v; body = %#v", resp.StatusCode, out["error"], out)
+					}
+					result := out["result"].(map[string]any)
+					if result["isError"] != true {
+						t.Fatalf("JSON-RPC result = %#v, want tool error", result)
+					}
+					if got := result["structuredContent"].(map[string]any); !reflect.DeepEqual(got, tt.wantError) {
+						t.Fatalf("JSON-RPC error = %#v, want %#v", got, tt.wantError)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestMCPBoardGetTransportContract_ToolsListAdvertisesCanonicalAndSort(t *testing.T) {
 	fixture := newBoardGetTransportFixture(t)
 

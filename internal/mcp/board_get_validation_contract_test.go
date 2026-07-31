@@ -4,9 +4,182 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"scrumboy/internal/store"
 )
+
+func TestBoardGetContract_TargetStatePrecedenceMatrix(t *testing.T) {
+	h := newBoardGetContractHarness(t)
+	expired, err := h.Store.CreateAnonymousBoard(context.Background())
+	if err != nil {
+		t.Fatalf("create expiring project: %v", err)
+	}
+	if _, err := h.DB.Exec(
+		`UPDATE projects SET expires_at = ? WHERE id = ?`,
+		time.Now().UTC().Add(-time.Hour).UnixMilli(),
+		expired.ID,
+	); err != nil {
+		t.Fatalf("expire project: %v", err)
+	}
+
+	targets := []struct {
+		name       string
+		slug       string
+		ctx        context.Context
+		accessible bool
+	}{
+		{
+			name:       "accessible",
+			slug:       h.Project.Slug,
+			ctx:        store.WithUserID(context.Background(), h.Owner.ID),
+			accessible: true,
+		},
+		{
+			name: "denied",
+			slug: h.Project.Slug,
+			ctx:  store.WithUserID(context.Background(), h.Other.ID),
+		},
+		{
+			name: "missing",
+			slug: "missing-precedence-board",
+			ctx:  store.WithUserID(context.Background(), h.Owner.ID),
+		},
+		{
+			name: "expired",
+			slug: expired.Slug,
+			ctx:  store.WithUserID(context.Background(), h.Owner.ID),
+		},
+	}
+
+	fields := []struct {
+		name               string
+		input              func(string) map[string]any
+		preAccess          bool
+		message            string
+		details            map[string]any
+		accessibleCallPath []string
+	}{
+		{
+			name:      "assignee JSON type",
+			input:     func(slug string) map[string]any { return map[string]any{"projectSlug": slug, "assignee": 42} },
+			preAccess: true,
+			message:   "invalid assignee",
+			details:   map[string]any{"field": "assignee"},
+		},
+		{
+			name:      "limit",
+			input:     func(slug string) map[string]any { return map[string]any{"projectSlug": slug, "limit": -1} },
+			preAccess: true,
+			message:   "invalid limit",
+			details:   map[string]any{"field": "limit"},
+		},
+		{
+			name:      "assignee grammar",
+			input:     func(slug string) map[string]any { return map[string]any{"projectSlug": slug, "assignee": "somebody"} },
+			preAccess: true,
+			message:   "invalid assignee",
+			details:   map[string]any{"field": "assignee"},
+		},
+		{
+			name:      "sort",
+			input:     func(slug string) map[string]any { return map[string]any{"projectSlug": slug, "sort": "rank-desc"} },
+			preAccess: true,
+			message:   "invalid sort",
+			details:   map[string]any{"field": "sort"},
+		},
+		{
+			name: "sprint",
+			input: func(slug string) map[string]any {
+				return map[string]any{"projectSlug": slug, "sprintId": -1}
+			},
+			message:            "invalid sprintId",
+			details:            map[string]any{"field": "sprintId"},
+			accessibleCallPath: []string{"countUsers", "access"},
+		},
+		{
+			name: "unknown cursor column",
+			input: func(slug string) map[string]any {
+				return map[string]any{
+					"projectSlug": slug,
+					"cursorByColumn": map[string]any{
+						"unknown": encodeBoardCursor("1:1"),
+					},
+				}
+			},
+			message: "invalid column cursor",
+			details: map[string]any{
+				"field":     "cursorByColumn",
+				"columnKey": "unknown",
+			},
+			accessibleCallPath: []string{"countUsers", "access", "workflow"},
+		},
+		{
+			name: "malformed cursor",
+			input: func(slug string) map[string]any {
+				return map[string]any{
+					"projectSlug": slug,
+					"cursorByColumn": map[string]any{
+						"triage": "not-base64!",
+					},
+				}
+			},
+			message: "invalid board cursor",
+			details: map[string]any{
+				"field":     "cursorByColumn",
+				"columnKey": "triage",
+			},
+			accessibleCallPath: []string{"countUsers", "access", "workflow"},
+		},
+	}
+
+	for _, target := range targets {
+		t.Run(target.name, func(t *testing.T) {
+			for _, field := range fields {
+				t.Run(field.name, func(t *testing.T) {
+					h.Context = target.ctx
+
+					_, _, readErr := h.call(field.input(target.slug))
+
+					if field.preAccess {
+						requireBoardGetError(
+							t,
+							readErr,
+							http.StatusBadRequest,
+							CodeValidationError,
+							field.message,
+							field.details,
+						)
+						requireOperationNames(t, h.Recording, "countUsers")
+						return
+					}
+					if !target.accessible {
+						requireBoardGetError(
+							t,
+							readErr,
+							http.StatusNotFound,
+							CodeNotFound,
+							"not found",
+							map[string]any{},
+						)
+						requireOperationNames(t, h.Recording, "countUsers", "access")
+						return
+					}
+
+					requireBoardGetError(
+						t,
+						readErr,
+						http.StatusBadRequest,
+						CodeValidationError,
+						field.message,
+						field.details,
+					)
+					requireOperationNames(t, h.Recording, field.accessibleCallPath...)
+				})
+			}
+		})
+	}
+}
 
 func TestBoardGetContract_ValidationBeforeAccess(t *testing.T) {
 	tests := []struct {

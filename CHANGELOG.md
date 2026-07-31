@@ -10,6 +10,14 @@
 
 ### Changed
 
+- **MCP `board_get` validation/access precedence is explicit** - Existing
+  behavior is now documented and protected as a tiered contract. Input shape,
+  required slug, per-column limit, assignee grammar/type, and sort validation
+  precede project access; sprint and workflow/cursor validation follow access,
+  preserving `NOT_FOUND` masking for denied, missing, and expired targets.
+  Legacy MCP, JSON-RPC, `board_get`, and `board.get` remain equivalent. REST
+  slug board reads intentionally remain access-first.
+
 - **MCP `board_get.sprintId` identity is explicit** - Tool discovery and public
   documentation now state that `board_get.sprintId` is the stored sprint row
   ID returned by `sprints_list`, not the project-local `number` used by REST
