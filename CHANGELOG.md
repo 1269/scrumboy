@@ -2,6 +2,12 @@
 
 > **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.29.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags), **3.29.0** (MCP JSON-RPC error/`board_get` identity) - see those releases.
 
+## [3.29.1] - 2026-07-31
+
+### Fixed
+
+- **Empty-search "no results" no longer appears as an extra desktop lane** - After the auto-fit board grid change, the "No todos found matching …" message was a grid sibling of the columns and stole a lane track (or compressed columns when spanning). On desktop/tablet (`min-width: 621px`) it is absolutely positioned over the board so lane layout is unchanged. Mobile flex layout is unchanged.
+
 ## [3.29.0] - 2026-07-31
 
 ### Changed
