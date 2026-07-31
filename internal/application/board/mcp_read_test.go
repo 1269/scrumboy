@@ -27,6 +27,7 @@ type mcpBoardReadCall struct {
 	assigneeFilter store.AssigneeFilter
 	sprintFilter   store.SprintFilter
 	sortOrder      store.SortOrder
+	err            error
 }
 
 type mcpBoardReadRecorder struct {
@@ -241,6 +242,14 @@ func newMCPBoardReadHarness() *mcpBoardReadHarness {
 		listErrs:  make(map[string]error),
 	}
 	activity := &mcpBoardReadActivityFake{recorder: recorder}
+	reportActivityRefreshFailure := func(ctx context.Context, projectID int64, err error) {
+		recorder.record(mcpBoardReadCall{
+			operation: "activityFailure",
+			ctx:       ctx,
+			projectID: projectID,
+			err:       err,
+		})
+	}
 
 	return &mcpBoardReadHarness{
 		recorder: recorder,
@@ -250,11 +259,12 @@ func newMCPBoardReadHarness() *mcpBoardReadHarness {
 		lanes:    lanes,
 		activity: activity,
 		service: NewMCPBoardReadService(MCPBoardReadServiceDependencies{
-			Access:   access,
-			Sprints:  sprints,
-			Workflow: workflow,
-			Lanes:    lanes,
-			Activity: activity,
+			Access:                       access,
+			Sprints:                      sprints,
+			Workflow:                     workflow,
+			Lanes:                        lanes,
+			Activity:                     activity,
+			ReportActivityRefreshFailure: reportActivityRefreshFailure,
 		}),
 	}
 }
@@ -512,7 +522,6 @@ func TestMCPBoardReadFailureShortCircuiting(t *testing.T) {
 	workflowErr := errors.New("workflow failed")
 	listErr := errors.New("list failed")
 	countErr := errors.New("count failed")
-	activityErr := errors.New("activity failed")
 
 	tests := []struct {
 		name           string
@@ -564,19 +573,6 @@ func TestMCPBoardReadFailureShortCircuiting(t *testing.T) {
 				"access", "workflow", "list:triage", "count:triage", "list:shipped", "count:shipped",
 			},
 		},
-		{
-			name: "fatal activity refresh",
-			configure: func(h *mcpBoardReadHarness) {
-				expiresAt := time.Now().Add(time.Hour)
-				h.access.result.Project.ExpiresAt = &expiresAt
-				h.activity.err = activityErr
-			},
-			wantErr: activityErr,
-			wantOperations: []string{
-				"access", "workflow", "list:triage", "count:triage",
-				"list:shipped", "count:shipped", "activity",
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -594,5 +590,36 @@ func TestMCPBoardReadFailureShortCircuiting(t *testing.T) {
 				t.Fatalf("operations = %v, want %v", got, tt.wantOperations)
 			}
 		})
+	}
+}
+
+func TestMCPBoardReadActivityRefreshFailureIsBestEffortAndReported(t *testing.T) {
+	h := newMCPBoardReadHarness()
+	expiresAt := time.Now().Add(time.Hour)
+	h.access.result.Project.ExpiresAt = &expiresAt
+	activityErr := errors.New("activity failed")
+	h.activity.err = activityErr
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "request")
+	prepared := prepareMCPBoardRead(t, h, ctx)
+
+	result, err := prepared.Read(MCPBoardReadQuery{Limit: 20})
+
+	if err != nil {
+		t.Fatalf("Read returned ancillary activity error: %v", err)
+	}
+	if result.Project.ID != 17 || len(result.Columns) != 2 {
+		t.Fatalf("Read result = %#v, want completed board projection", result)
+	}
+	wantOperations := []string{
+		"access", "workflow", "list:triage", "count:triage",
+		"list:shipped", "count:shipped", "activity", "activityFailure",
+	}
+	if got := h.recorder.operations(); !reflect.DeepEqual(got, wantOperations) {
+		t.Fatalf("operations = %v, want %v", got, wantOperations)
+	}
+	report := h.recorder.calls[len(h.recorder.calls)-1]
+	if report.ctx != ctx || report.projectID != 17 || !errors.Is(report.err, activityErr) {
+		t.Fatalf("activity failure report = %#v, want exact context, project, and cause", report)
 	}
 }

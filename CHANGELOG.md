@@ -11,6 +11,12 @@
 ### Fixed
 
 - **Board columns fill width when fewer than five lanes (PR #201)** - `.board` used a hardcoded five-column grid, so workflows with fewer lanes left empty tracks on the right. Switched to `auto-fit` so existing columns stretch to fill the row.
+- **MCP Temporary Board reads no longer fail on activity maintenance** -
+  `board_get` now treats its final throttled `UpdateBoardActivity` call as
+  best-effort, matching REST board reads. If the board snapshot loaded
+  successfully but the lifetime refresh fails, legacy and JSON-RPC clients
+  receive the complete board while the server logs the project and internal
+  cause. Durable, expired, and earlier read-failure behavior is unchanged.
 
 ## [3.28.3] - 2026-07-28
 

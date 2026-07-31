@@ -449,6 +449,11 @@ Conventions:
 - **Assignee filter:** `assignee` is a **string**. Use `"me"` for the authenticated caller, `"unassigned"` for todos with no assignee, or a positive user ID encoded as a string such as `"42"`. Sentinels are case-sensitive after surrounding whitespace is trimmed. Unknown/non-member positive IDs return an empty board; malformed values return `VALIDATION_ERROR` with `field: "assignee"`. A JSON number such as `42` is invalid.
 - **Output:** `data.project` (`projectSlug`, `name`, `role`), `data.columns` (each: `key`, `name`, `isDone`, `items` as todo-shaped objects).
 - **Meta:** `nextCursorByColumn`, `hasMoreByColumn`, `totalCountByColumn` (per column key). See **Board pagination** below.
+- **Temporary Board activity:** after an expiring board is completely loaded,
+  MCP makes a final, throttled best-effort activity refresh. A maintenance
+  write failure is logged internally but does not discard the authorized board
+  snapshot or add a public warning. Success therefore does not guarantee that
+  this request persisted a new `expiresAt`.
 - **Note:** Not available in anonymous mode or before bootstrap; requires sign-in.
 
 ### Todos

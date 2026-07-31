@@ -121,33 +121,44 @@ type MCPBoardReadActivityStore interface {
 	UpdateBoardActivity(ctx context.Context, projectID int64) error
 }
 
+// MCPBoardReadActivityFailureReporter observes ancillary refresh failures
+// without coupling the application service to a logging package.
+type MCPBoardReadActivityFailureReporter func(ctx context.Context, projectID int64, err error)
+
 // MCPBoardReadServiceDependencies names the persistence role supplied to each
 // part of the MCP board-read operation.
 type MCPBoardReadServiceDependencies struct {
-	Access   SlugReadAccessStore
-	Sprints  MCPBoardReadSprintStore
-	Workflow MCPBoardReadWorkflowStore
-	Lanes    MCPBoardReadLaneStore
-	Activity MCPBoardReadActivityStore
+	Access                       SlugReadAccessStore
+	Sprints                      MCPBoardReadSprintStore
+	Workflow                     MCPBoardReadWorkflowStore
+	Lanes                        MCPBoardReadLaneStore
+	Activity                     MCPBoardReadActivityStore
+	ReportActivityRefreshFailure MCPBoardReadActivityFailureReporter
 }
 
 // MCPBoardReadService owns the persistence orchestration specific to MCP
 // board_get without changing the REST board-read services.
 type MCPBoardReadService struct {
-	access   SlugReadAccessStore
-	sprints  MCPBoardReadSprintStore
-	workflow MCPBoardReadWorkflowStore
-	lanes    MCPBoardReadLaneStore
-	activity MCPBoardReadActivityStore
+	access                       SlugReadAccessStore
+	sprints                      MCPBoardReadSprintStore
+	workflow                     MCPBoardReadWorkflowStore
+	lanes                        MCPBoardReadLaneStore
+	activity                     MCPBoardReadActivityStore
+	reportActivityRefreshFailure MCPBoardReadActivityFailureReporter
 }
 
 func NewMCPBoardReadService(deps MCPBoardReadServiceDependencies) *MCPBoardReadService {
+	reportActivityRefreshFailure := deps.ReportActivityRefreshFailure
+	if reportActivityRefreshFailure == nil {
+		reportActivityRefreshFailure = func(context.Context, int64, error) {}
+	}
 	return &MCPBoardReadService{
-		access:   deps.Access,
-		sprints:  deps.Sprints,
-		workflow: deps.Workflow,
-		lanes:    deps.Lanes,
-		activity: deps.Activity,
+		access:                       deps.Access,
+		sprints:                      deps.Sprints,
+		workflow:                     deps.Workflow,
+		lanes:                        deps.Lanes,
+		activity:                     deps.Activity,
+		reportActivityRefreshFailure: reportActivityRefreshFailure,
 	}
 }
 
@@ -266,7 +277,7 @@ func (r *PreparedMCPBoardRead) Read(query MCPBoardReadQuery) (MCPBoardReadResult
 
 	if r.projectContext.Project.ExpiresAt != nil {
 		if err := r.service.activity.UpdateBoardActivity(r.ctx, projectID); err != nil {
-			return MCPBoardReadResult{}, err
+			r.service.reportActivityRefreshFailure(r.ctx, projectID, err)
 		}
 	}
 

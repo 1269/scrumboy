@@ -357,6 +357,14 @@ A valid unknown or non-member user ID returns an empty board.
 orders items within each lane by creation time with a stable ID tie-break.
 Omit `sort` to preserve manual drag-rank order.
 
+For an expiring Temporary Board, `board_get` performs its throttled activity
+refresh only after the workflow and every requested lane/count have loaded.
+That refresh is best-effort maintenance: a failure is logged by the server,
+while both legacy and JSON-RPC clients still receive the completed board
+without a warning field. A successful read does not guarantee that this
+particular request persisted a new expiry. Durable boards skip the refresh;
+expired or inaccessible boards still fail during access.
+
 **Workflow**
 
 - `workflow_list`

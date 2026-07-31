@@ -1,10 +1,12 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"log"
 	"path/filepath"
 	"testing"
 	"time"
@@ -281,6 +283,7 @@ type boardGetContractHarness struct {
 	Other     store.User
 	Project   store.Project
 	Context   context.Context
+	Logs      *bytes.Buffer
 }
 
 func newBoardGetContractHarness(t *testing.T) *boardGetContractHarness {
@@ -319,15 +322,20 @@ func newBoardGetContractHarness(t *testing.T) *boardGetContractHarness {
 	}
 
 	recording := newRecordingBoardGetStore(st)
+	logs := &bytes.Buffer{}
 	return &boardGetContractHarness{
 		DB:        sqlDB,
 		Store:     st,
 		Recording: recording,
-		Adapter:   New(recording, Options{Mode: "full"}),
-		Owner:     owner,
-		Other:     other,
-		Project:   project,
-		Context:   ctx,
+		Adapter: New(recording, Options{
+			Mode:   "full",
+			Logger: log.New(logs, "", 0),
+		}),
+		Owner:   owner,
+		Other:   other,
+		Project: project,
+		Context: ctx,
+		Logs:    logs,
 	}
 }
 

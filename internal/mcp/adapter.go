@@ -118,6 +118,9 @@ func New(st storeAPI, opts Options) *Adapter {
 			Workflow: st,
 			Lanes:    st,
 			Activity: st,
+			ReportActivityRefreshFailure: func(_ context.Context, projectID int64, err error) {
+				logger.Printf("mcp: board activity refresh failed project_id=%d: %v", projectID, err)
+			},
 		}),
 		mode:         mode,
 		tools:        make(toolRegistry),
