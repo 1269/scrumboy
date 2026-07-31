@@ -1,14 +1,18 @@
 # Changelog
 
-> **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.28.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags) - see those releases.
+> **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.29.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags), **3.29.0** (MCP JSON-RPC error/`board_get` identity) - see those releases.
 
-## [3.28.4] - 2026-07-28
-
-### Added
-
-- **Wrap lanes into rows** - Settings → Customization gains an opt-in Wrap lanes into rows toggle (off by default). On wide screens (≥1301px), boards with more than five lanes split into two equal rows of `⌊n / 2⌋` columns (for example 8 → 4+4, 10 → 5+5); an odd leftover lane sits alone on a third row at normal width. Signed-in users sync via `/api/user/preferences`; hydration resets to off before applying the server value so a previous browser user's local preference cannot leak across accounts. Anonymous users keep the choice in localStorage only. Tablet/mobile board layout is unchanged.
+## [3.29.0] - 2026-07-31
 
 ### Changed
+
+- **Board reads move behind an application service** - REST initial board,
+  lane pagination, legacy numeric-ID board, and slug access resolution now
+  share an `internal/application/board` seam. MCP `board_get` orchestration
+  (legacy `/mcp`, JSON-RPC, and the permanent `board.get` alias) uses the same
+  application layer. HTTP and MCP adapters stay thin transport wrappers;
+  runtime permissions, filters, pagination, and response shapes are preserved.
+  Contract tests lock the migrated paths.
 
 - **Numeric REST board compatibility is explicit** -
   `GET /api/projects/{id}/board` remains a supported, unpaged compatibility
@@ -39,15 +43,46 @@
   Clients that compared the submitted value byte-for-byte should use the
   returned canonical identifier instead.
 
+- **MCP JSON-RPC tool errors carry sanitized structured content** - On
+  `tools/call` failure, HTTP 200 + `isError: true` responses now include
+  `structuredContent` with allowlisted `code`, `message`, and `details`
+  matching the legacy adapter envelope. `INTERNAL` always returns message
+  `internal error` with `{}` details; database, infrastructure, and invariant
+  text stay in the server log. The legacy HTTP status is not copied into the
+  JSON-RPC tool result. Plain-text `content` messages are unchanged.
+
+- **MCP JSON-RPC exposes approved legacy metadata beside tool data** -
+  Successful `tools/call` results keep existing data fields and add an
+  allowlist of already-public legacy `meta` values into `structuredContent`
+  and the JSON text block: `system_getCapabilities` → `adapterVersion`;
+  `sprints_list` → `unscheduledCount`; `dashboard_listTodos` → `nextCursor` /
+  `hasMore`; `board_get` → `nextCursorByColumn` / `hasMoreByColumn` /
+  `totalCountByColumn`. Unapproved metadata is omitted; colliding data fields
+  win. Legacy `/mcp` keeps its `{data,meta}` separation.
+
 ### Fixed
 
-- **Board columns fill width when fewer than five lanes (PR #201)** - `.board` used a hardcoded five-column grid, so workflows with fewer lanes left empty tracks on the right. Switched to `auto-fit` so existing columns stretch to fill the row.
 - **MCP Temporary Board reads no longer fail on activity maintenance** -
   `board_get` now treats its final throttled `UpdateBoardActivity` call as
   best-effort, matching REST board reads. If the board snapshot loaded
   successfully but the lifetime refresh fails, legacy and JSON-RPC clients
   receive the complete board while the server logs the project and internal
   cause. Durable, expired, and earlier read-failure behavior is unchanged.
+
+- **MCP `board_get` discovery and pagination stay aligned** - JSON-RPC
+  `board_get` success payloads and tool catalog/`tools/list` descriptions
+  consistently surface the per-column pagination maps, matching legacy `meta`
+  and capability docs.
+
+## [3.28.4] - 2026-07-28
+
+### Added
+
+- **Wrap lanes into rows** - Settings → Customization gains an opt-in Wrap lanes into rows toggle (off by default). On wide screens (≥1301px), boards with more than five lanes split into two equal rows of `⌊n / 2⌋` columns (for example 8 → 4+4, 10 → 5+5); an odd leftover lane sits alone on a third row at normal width. Signed-in users sync via `/api/user/preferences`; hydration resets to off before applying the server value so a previous browser user's local preference cannot leak across accounts. Anonymous users keep the choice in localStorage only. Tablet/mobile board layout is unchanged.
+
+### Fixed
+
+- **Board columns fill width when fewer than five lanes (PR #201)** - `.board` used a hardcoded five-column grid, so workflows with fewer lanes left empty tracks on the right. Switched to `auto-fit` so existing columns stretch to fill the row.
 
 ## [3.28.3] - 2026-07-28
 
