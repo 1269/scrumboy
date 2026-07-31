@@ -357,6 +357,14 @@ A valid unknown or non-member user ID returns an empty board.
 orders items within each lane by creation time with a stable ID tie-break.
 Omit `sort` to preserve manual drag-rank order.
 
+The optional `sprintId` filter is the stored sprint row ID returned as
+`sprintId` by `sprints_list`. It is not the project-local `number` in the same
+sprint item. Omit it (or send `null`) for no sprint filter. A supplied value
+must be positive and must identify a sprint in `projectSlug`; missing and
+cross-project IDs both return `NOT_FOUND`. This stored-ID convention is shared
+by MCP sprint mutations, todo sprint assignment, and sprint-scoped metrics.
+REST board URLs intentionally use the project-local sprint number instead.
+
 `projectSlug` is a lookup identifier, not a request-echo field. Lookup accepts
 normalization-equivalent values such as uppercase or surrounding whitespace.
 On success, `project.projectSlug` and every returned todo's `projectSlug` use

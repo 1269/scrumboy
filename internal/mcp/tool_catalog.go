@@ -310,7 +310,7 @@ func toolCatalogDefinitions() map[string]mcpToolDef {
 				"search":      jsonProp("string", "Filter by search text"),
 				"assignee":    jsonProp("string", "Filter by \"me\", \"unassigned\", or a positive user ID encoded as a string"),
 				"sort":        jsonStringEnumProp("Sort items within each lane by creation time: newest or oldest; omit for manual drag-rank order", []string{"newest", "oldest"}),
-				"sprintId":    jsonPropWithNull("integer", "Filter to a sprint"),
+				"sprintId":    jsonPropWithNull("integer", "Filter by the stored sprint row ID returned as sprintId by sprints_list; this is not the project-local sprint number returned as number"),
 				"limit":       jsonProp("integer", "Maximum items per column"),
 				"cursorByColumn": map[string]any{
 					"type":                 "object",

@@ -10,6 +10,12 @@
 
 ### Changed
 
+- **MCP `board_get.sprintId` identity is explicit** - Tool discovery and public
+  documentation now state that `board_get.sprintId` is the stored sprint row
+  ID returned by `sprints_list`, not the project-local `number` used by REST
+  board filtering. Existing runtime behavior, missing/cross-project masking,
+  and the permanent `board.get` alias remain unchanged.
+
 - **MCP `board_get` returns canonical slug identity** - Successful
   `project.projectSlug` and todo `projectSlug` fields now use the persisted
   canonical slug over legacy and JSON-RPC transports and the permanent

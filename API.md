@@ -343,7 +343,7 @@ Tools use these **public** identifiers as primary keys in inputs and outputs:
 
 - **Project:** `projectSlug`
 - **Todo:** `projectSlug` + `localId` (no global todo id in MCP todo/board shapes)
-- **Sprint:** `projectSlug` + `sprintId` - `sprintId` is the **stored sprint row id** (see sprint list/get); sprint payloads also include `number` for display ordering
+- **Sprint:** `projectSlug` + `sprintId` - `sprintId` is the **stored sprint row id** (see sprint list/get); sprint payloads also include the distinct project-local `number` for display ordering and REST board filtering
 - **Mine-scope tag:** `tagId` (current user’s tag library)
 - **Project-scope tag (durable projects):** grouped by **canonical name**. `tags_listProject` returns one logical entry per canonical name (names are compared after canonicalization, so legacy `make space` and `make-space` rows collapse into one `make-space` entry); a `tagId` is present **only** for board-scoped tags (not user-owned). Grouped personal labels omit `tagId` and are addressed by `projectSlug` + `tagName`. A legacy row whose stored name cannot be canonicalized keeps its raw stored name as the label, and that label is what `tagName` and the board `tag` filter accept for it.
 - **Project-scope tag (temporary boards):** **not grouped.** Boards with an expiry keep the row-level projection — one entry per tag row, each with a real `tagId` — because their colors and deletions are still addressed by `tagId`.
@@ -444,7 +444,7 @@ Conventions:
 ### `board_get`
 
 - **Purpose:** Board snapshot with optional tag/search/sprint/assignee filters and **per-column** pagination.
-- **Input:** `projectSlug` (required); optional `tag`, `search`, `assignee`, `sprintId` (sprint row id; must belong to the project when set); optional `limit` (default 20, max 100); optional `cursorByColumn` (map column key → opaque cursor string). Omitting `sprintId` applies no sprint-based filter on the board query (internal mode `none`).
+- **Input:** `projectSlug` (required); optional `tag`, `search`, `assignee`, `sprintId` (the stored sprint row id returned by `sprints_list`, not its project-local `number`; must belong to the project when set); optional `limit` (default 20, max 100); optional `cursorByColumn` (map column key → opaque cursor string). Omitting `sprintId` or sending `null` applies no sprint-based filter on the board query (internal mode `none`). Nonpositive values return `VALIDATION_ERROR`; missing and cross-project row IDs both return `NOT_FOUND`.
 - **Tag filter:** on durable projects, `tag` is matched on the same grouping key `tags_listProject` labels entries with, so filtering by `make-space` returns todos carrying either the canonical row or a legacy `make space` row and filtered counts agree with the chip counts. Temporary boards keep exact stored-name matching (row-level chips): the filter is not rewritten through `TagGroupKey`, so a `make space` chip selects only that row. A `tag` that matches no row returns an empty board rather than an unfiltered one.
 - **Assignee filter:** `assignee` is a **string**. Use `"me"` for the authenticated caller, `"unassigned"` for todos with no assignee, or a positive user ID encoded as a string such as `"42"`. Sentinels are case-sensitive after surrounding whitespace is trimmed. Unknown/non-member positive IDs return an empty board; malformed values return `VALIDATION_ERROR` with `field: "assignee"`. A JSON number such as `42` is invalid.
 - **Output:** `data.project` (`projectSlug`, `name`, `role`), `data.columns`
