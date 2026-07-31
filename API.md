@@ -87,7 +87,7 @@ After Origin validation and authentication, **non-POST** methods receive an empt
 
 `params` is unmarshaled with the Go JSON package **without** `DisallowUnknownFields`, so **extra keys** on `params` beside `name` / `arguments` are **ignored** (not rejected).
 
-**`tools/call` uses the same tool registry as `POST /mcp`**. For tools that have a catalog definition, the server performs a **lightweight check** that JSON Schema `required` top-level properties are present in `arguments` before calling the handler; full JSON Schema validation is not performed. **Unknown tool names** produce an HTTP **200** JSON-RPC **`result`** with **`isError: true`** and a text **`content`** message **`tool not found`** (not a JSON-RPC top-level **`error`** object with `-32601`). Invalid/missing `params` shape still yields JSON-RPC **`error`** (e.g. `-32602` **invalid params**).
+**`tools/call` uses the same tool registry as `POST /mcp`**. For tools that have a catalog definition, the server performs a **lightweight check** that JSON Schema `required` top-level properties are present in `arguments` before calling the handler; full JSON Schema validation is not performed. **Unknown tool names** produce an HTTP **200** JSON-RPC **`result`** with **`isError: true`**, a text **`content`** message **`tool not found`**, and sanitized machine-readable **`structuredContent`** (not a JSON-RPC top-level **`error`** object with `-32601`). Invalid/missing `params` shape still yields JSON-RPC **`error`** (e.g. `-32602` **invalid params**).
 
 **Example `tools/call`:**
 
@@ -135,7 +135,40 @@ All JSON-RPC **responses with a body** include `"jsonrpc": "2.0"` and preserve t
 
 **`structuredContent`** is the tool’s result value (same conceptual payload as legacy `data`). **`content`** is a single MCP-style **text** block whose **`text`** field is JSON **string** of that same payload (from `json.Marshal` in `internal/mcp/jsonrpc_handler.go`).
 
-**Error:**
+**Tool execution error:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "invalid sort"
+      }
+    ],
+    "structuredContent": {
+      "code": "VALIDATION_ERROR",
+      "message": "invalid sort",
+      "details": {
+        "field": "sort"
+      }
+    },
+    "isError": true
+  }
+}
+```
+
+Tool failures retain HTTP **200** and MCP **`isError: true`**. The text block
+retains the existing human-readable message for compatibility.
+**`structuredContent`** contains the stable adapter **`code`**, the same
+**`message`**, and allowlisted **`details`**. It deliberately does not copy the
+legacy transport's HTTP status. For **`INTERNAL`**, **`details`** is always
+`{}` and **`message`** is always `internal error`; the full cause or invariant
+message is written only to the server log.
+
+**JSON-RPC protocol error:**
 
 ```json
 {
@@ -193,6 +226,10 @@ All JSON-RPC **responses with a body** include `"jsonrpc": "2.0"` and preserve t
 ```
 
 - `details` is always present; it is an object when the adapter has nothing to attach (`{}`).
+- Detail keys are allowlisted at the MCP serialization boundary. `INTERNAL`
+  errors always return message `internal error` with `{}` details and never
+  expose database, infrastructure, or invariant text; the underlying cause is
+  recorded in the server log.
 - HTTP status codes generally align with error codes (e.g. 401 for `AUTH_REQUIRED`, 403 for `CAPABILITY_UNAVAILABLE`, 404 for `NOT_FOUND`), but exact mappings may vary by handler.
 
 ---

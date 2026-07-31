@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -82,6 +84,7 @@ type storeAPI interface {
 type Options struct {
 	Mode         string
 	PublicOrigin *publicorigin.Resolver
+	Logger       *log.Logger
 }
 
 type Adapter struct {
@@ -90,6 +93,7 @@ type Adapter struct {
 	mode         string
 	tools        toolRegistry
 	publicOrigin *publicorigin.Resolver
+	logger       *log.Logger
 }
 
 func New(st storeAPI, opts Options) *Adapter {
@@ -100,6 +104,10 @@ func New(st storeAPI, opts Options) *Adapter {
 	resolver := opts.PublicOrigin
 	if resolver == nil {
 		resolver = publicorigin.New("", false)
+	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = log.New(io.Discard, "", 0)
 	}
 
 	a := &Adapter{
@@ -114,9 +122,21 @@ func New(st storeAPI, opts Options) *Adapter {
 		mode:         mode,
 		tools:        make(toolRegistry),
 		publicOrigin: resolver,
+		logger:       logger,
 	}
 	a.registerTools()
 	return a
+}
+
+func (a *Adapter) logAdapterError(transport, tool string, err *adapterError) {
+	if err == nil || err.Code != CodeInternal {
+		return
+	}
+	if err.Cause != nil {
+		a.logger.Printf("mcp: internal error transport=%s tool=%s: %v", transport, tool, err.Cause)
+		return
+	}
+	a.logger.Printf("mcp: internal error transport=%s tool=%s: %s", transport, tool, err.Message)
 }
 
 // parseBearerAuthorization parses Authorization: Bearer. The credential is the segment after the first

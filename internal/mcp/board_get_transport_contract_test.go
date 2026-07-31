@@ -280,7 +280,7 @@ func TestMCPBoardGetTransportContract_JSONRPCPaginationContinuesFromReturnedCurs
 	}
 }
 
-func TestMCPBoardGetTransportContract_JSONRPCToolErrorLosesLegacyDetails(t *testing.T) {
+func TestMCPBoardGetTransportContract_JSONRPCToolErrorAddsSanitizedStructuredDetails(t *testing.T) {
 	fixture := newBoardGetTransportFixture(t)
 
 	resp, out := doJSONRPC(t, fixture.client, fixture.serverURL, map[string]any{
@@ -300,7 +300,7 @@ func TestMCPBoardGetTransportContract_JSONRPCToolErrorLosesLegacyDetails(t *test
 		t.Fatalf("status = %d, body=%#v", resp.StatusCode, out)
 	}
 	result := out["result"].(map[string]any)
-	if got, want := sortedMapKeys(result), []string{"content", "isError"}; !reflect.DeepEqual(got, want) {
+	if got, want := sortedMapKeys(result), []string{"content", "isError", "structuredContent"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("result keys = %v, want %v", got, want)
 	}
 	if result["isError"] != true {
@@ -310,10 +310,22 @@ func TestMCPBoardGetTransportContract_JSONRPCToolErrorLosesLegacyDetails(t *test
 	if len(content) != 1 || content[0].(map[string]any)["text"] != "invalid sort" {
 		t.Fatalf("content = %#v", content)
 	}
-	for _, absent := range []string{"structuredContent", "code", "details", "status"} {
+	structured := result["structuredContent"].(map[string]any)
+	if got, want := sortedMapKeys(structured), []string{"code", "details", "message"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("structuredContent keys = %v, want %v", got, want)
+	}
+	if structured["code"] != "VALIDATION_ERROR" ||
+		structured["message"] != "invalid sort" ||
+		!reflect.DeepEqual(structured["details"], map[string]any{"field": "sort"}) {
+		t.Fatalf("structuredContent = %#v", structured)
+	}
+	for _, absent := range []string{"code", "details", "status"} {
 		if _, ok := result[absent]; ok {
-			t.Fatalf("JSON-RPC tool error unexpectedly exposes %q: %#v", absent, result)
+			t.Fatalf("JSON-RPC tool error unexpectedly flattens %q: %#v", absent, result)
 		}
+	}
+	if _, ok := structured["status"]; ok {
+		t.Fatalf("JSON-RPC structured tool error unexpectedly copies HTTP status: %#v", structured)
 	}
 }
 

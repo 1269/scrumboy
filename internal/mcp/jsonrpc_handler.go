@@ -121,6 +121,7 @@ func (a *Adapter) serveJSONRPC(w http.ResponseWriter, r *http.Request) {
 
 	allowed, err := a.publicOrigin.OriginAllowed(r)
 	if err != nil {
+		a.logger.Printf("mcp: internal error transport=json-rpc tool=origin-validation: %v", err)
 		writeEmptyStatus(w, http.StatusServiceUnavailable)
 		return
 	}
@@ -132,6 +133,8 @@ func (a *Adapter) serveJSONRPC(w http.ResponseWriter, r *http.Request) {
 	if a.mode != "anonymous" {
 		authRes := a.resolveRequestAuth(r, oauthBearerAllowed(r))
 		if authRes.Err != nil {
+			authErr := newAdapterError(http.StatusInternalServerError, CodeInternal, "internal error", map[string]any{"detail": authRes.Err.Error()})
+			a.logAdapterError("json-rpc", "authentication", authErr)
 			if errors.Is(authRes.Err, publicorigin.ErrUnavailable) {
 				writeEmptyStatus(w, http.StatusServiceUnavailable)
 			} else {
@@ -424,20 +427,26 @@ func (a *Adapter) handleJSONRPCToolsCall(w http.ResponseWriter, r *http.Request,
 	}
 	handler, ok := a.tools[params.Name]
 	if !ok {
-		writeJSONRPCToolErrorResult(w, req.ID, "tool not found")
+		writeJSONRPCToolErrorResult(w, req.ID, newAdapterError(
+			http.StatusNotFound,
+			CodeNotFound,
+			"tool not found",
+			map[string]any{"tool": params.Name},
+		))
 		return
 	}
 	args := params.Arguments
 	if args == nil {
 		args = map[string]any{}
 	}
-	if err := validateRequiredFields(params.Name, args); err != "" {
+	if err := validateRequiredFields(params.Name, args); err != nil {
 		writeJSONRPCToolErrorResult(w, req.ID, err)
 		return
 	}
 	data, meta, toolErr := handler(r.Context(), args)
 	if toolErr != nil {
-		writeJSONRPCToolErrorResult(w, req.ID, toolErr.Message)
+		a.logAdapterError("json-rpc", params.Name, toolErr)
+		writeJSONRPCToolErrorResult(w, req.ID, toolErr)
 		return
 	}
 	writeJSONRPCToolSuccessResult(w, req.ID, jsonRPCToolStructuredContent(params.Name, data, meta))
@@ -498,7 +507,7 @@ func requiredFieldNamesFromSchema(schema map[string]any) []string {
 	}
 }
 
-func validateRequiredFields(toolName string, args map[string]any) string {
+func validateRequiredFields(toolName string, args map[string]any) *adapterError {
 	// Resolve deprecated dotted aliases (see legacyToolAliases in registry.go) to
 	// their canonical underscore name so old-name callers still get the same
 	// required-field validation as new-name callers.
@@ -507,18 +516,23 @@ func validateRequiredFields(toolName string, args map[string]any) string {
 	}
 	definition, ok := toolCatalogDefinitions()[toolName]
 	if !ok {
-		return ""
+		return nil
 	}
 	schema, ok := definition.InputSchema.(map[string]any)
 	if !ok {
-		return ""
+		return nil
 	}
 	for _, field := range requiredFieldNamesFromSchema(schema) {
 		if _, exists := args[field]; !exists {
-			return "missing required field: " + field
+			return newAdapterError(
+				http.StatusBadRequest,
+				CodeValidationError,
+				"missing required field: "+field,
+				map[string]any{"field": field},
+			)
 		}
 	}
-	return ""
+	return nil
 }
 
 func toolResultText(value any) string {
@@ -540,10 +554,12 @@ func writeJSONRPCToolSuccessResult(w http.ResponseWriter, id json.RawMessage, da
 	})
 }
 
-func writeJSONRPCToolErrorResult(w http.ResponseWriter, id json.RawMessage, message string) {
+func writeJSONRPCToolErrorResult(w http.ResponseWriter, id json.RawMessage, err *adapterError) {
+	clientError := clientErrorResponseBody(err)
 	writeJSONRPCResult(w, id, map[string]any{
-		"content": []mcpTextContent{{Type: "text", Text: message}},
-		"isError": true,
+		"content":           []mcpTextContent{{Type: "text", Text: clientError.Message}},
+		"structuredContent": clientError,
+		"isError":           true,
 	})
 }
 

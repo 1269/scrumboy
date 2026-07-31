@@ -693,7 +693,27 @@ Example success **`result`** for **`projects_list`** (empty list):
 }
 ```
 
-On tool failure, **`result.isError`** is **`true`**, **`content`** carries a plain-text message, and **`structuredContent`** is omitted (`internal/mcp/jsonrpc_handler.go`).
+On tool failure, **`result.isError`** is **`true`**, **`content`** carries the
+existing plain-text message, and **`structuredContent`** carries sanitized
+machine-readable `code`, `message`, and `details` fields
+(`internal/mcp/jsonrpc_handler.go`). The JSON-RPC representation never copies
+the legacy HTTP status.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "content": [{"type": "text", "text": "invalid sort"}],
+    "structuredContent": {
+      "code": "VALIDATION_ERROR",
+      "message": "invalid sort",
+      "details": {"field": "sort"}
+    },
+    "isError": true
+  }
+}
+```
 
 ## Error Handling
 
@@ -714,7 +734,13 @@ Errors use HTTP status on the wire and a JSON body **`{"ok":false,"error":{...}}
 
 Same **`code`** for a rejected **Bearer** token, with **`message`: `Authentication required`** (before any tool runs).
 
-`details` is always present (empty object when nil). Non-exhaustive **`code`** values from `internal/mcp/errors.go`: `AUTH_REQUIRED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_ERROR`, `CONFLICT`, `CAPABILITY_UNAVAILABLE`, `INTERNAL`, `METHOD_NOT_ALLOWED`.
+`details` is always present (empty object when nil). Detail keys are
+allowlisted at serialization. `INTERNAL` always returns message
+`internal error` with empty client details; database, infrastructure, and
+invariant causes are available only in the server log.
+Non-exhaustive **`code`** values from `internal/mcp/errors.go`:
+`AUTH_REQUIRED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_ERROR`, `CONFLICT`,
+`CAPABILITY_UNAVAILABLE`, `INTERNAL`, `METHOD_NOT_ALLOWED`.
 
 ### JSON-RPC `POST /mcp/rpc`
 
@@ -722,7 +748,13 @@ Same **`code`** for a rejected **Bearer** token, with **`message`: `Authenticati
 - **Invalid Origin:** empty HTTP **403** without an OAuth challenge. Requests with no `Origin` remain valid for non-browser clients; a supplied Origin must match the trusted public origin.
 - **Method/media/transport failures:** authenticated GET and unsupported methods return empty **405** with `Allow: POST`; restrictive `Accept` values that do not allow both JSON and SSE return **406**; unsupported JSON content types return **415**; accepted notifications return empty **202**. Structurally rejected notifications and known request-only methods (`initialize`, `ping`, `tools/list`, and `tools/call`) sent without an `id` return **400** and do not run a handler.
 - **Protocol errors** (bad JSON, unknown method, etc.): response is JSON-RPC **`error`** with integer **`code`** (e.g. `-32700` parse error, `-32601` method not found). Valid requests with an `id` keep the normal **200** protocol-error response. Rejected no-`id` messages use **400**, with `id: null` when an error body is emitted.
-- **Tool execution failure** (`tools/call`): HTTP **200** with a **`result`** object containing **`isError: true`**, **`content`** (text), and no successful `structuredContent` in the error path (`writeJSONRPCToolErrorResult` in `internal/mcp/jsonrpc_handler.go`).
+- **Tool execution failure** (`tools/call`): HTTP **200** with a **`result`**
+  object containing **`isError: true`**, **`content`** (the existing plain-text
+  message), and sanitized **`structuredContent`** with `code`, `message`, and
+  `details` (`writeJSONRPCToolErrorResult` in
+  `internal/mcp/jsonrpc_handler.go`). `INTERNAL` uses message `internal error`
+  with `{}` details, and the legacy HTTP status is not copied into the tool
+  result.
 - **Tool success**: **`result`** includes **`content`** (JSON text of payload) and **`structuredContent`** (parsed tool `data`).
 - **`board_get` success**: `structuredContent` keeps `project` and `columns` at
   their existing locations and also includes `nextCursorByColumn`,
