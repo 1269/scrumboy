@@ -2,6 +2,16 @@
 
 > **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.29.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags), **3.29.0** (MCP JSON-RPC error/`board_get` identity) - see those releases.
 
+## [3.30.0] - 2026-08-05
+
+### Added
+
+- **Todo priority** - Todos can now carry a priority, modeled as per-project customizable tiers (add/rename/recolor/delete) rather than a fixed global enum, mirroring the existing workflow-column feature. New projects are seeded with four default tiers: Low, Medium, High, Urgent. Manage tiers under Settings → Priorities (maintainer role required); pick a todo's priority from the now-dynamic Priority field in the todo dialog. The selected tier renders as a colored badge on the board card. REST (`GET/POST /api/board/{slug}/priorities`, `PATCH`/`DELETE .../priorities/{key}`, `GET .../priorities/counts`) and MCP (`priorities_list`, `priorities_create`, `priorities_update`, `priorities_delete`) both expose the same CRUD surface; `todos_create`/`todos_update` and their REST equivalents gained a `priorityKey` field. Deleting a tier is blocked while any todo still references it, or if it's the project's last remaining tier. Backup export/import round-trips both custom tiers and each todo's priority.
+
+### Changed
+
+- **Priority filtering/sorting is not included in this release** - the board read/query pipeline (REST and MCP) does not yet support filtering or sorting by priority; only per-tier "in use" counts (for the Settings tab's delete guard) are available. Tracked as a follow-up.
+
 ## [3.29.7] - 2026-08-05
 
 ### Changed
