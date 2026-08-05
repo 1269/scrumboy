@@ -24,6 +24,7 @@ describe("todo submit payload helpers", () => {
       estimationPoints: 5,
       sprintId: 12,
       assigneeUserId: 44,
+      priorityKey: null,
     });
   });
 
@@ -45,8 +46,32 @@ describe("todo submit payload helpers", () => {
       body,
       tags: [],
       assigneeUserId: null,
+      priorityKey: null,
     });
     expect(JSON.stringify(payload)).not.toContain("<h2>");
     expect(JSON.stringify(payload)).not.toContain("<strong>");
+  });
+
+  it("includes the selected priority key in create payloads", () => {
+    const payload = buildTodoCreatePayload({
+      title: "Title",
+      body: "",
+      tags: [],
+      columnKey: "backlog",
+      priorityKey: "urgent",
+    });
+
+    expect(payload.priorityKey).toBe("urgent");
+  });
+
+  it("normalizes an empty priority key to null", () => {
+    const payload = buildTodoPatchPayload({
+      title: "Title",
+      body: "",
+      tags: [],
+      priorityKey: "",
+    });
+
+    expect(payload.priorityKey).toBeNull();
   });
 });

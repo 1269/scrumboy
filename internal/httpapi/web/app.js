@@ -6,7 +6,7 @@
 // - dist/**/*.js is emitted runtime/build output, not the primary editing target.
 // - source-side modules/**/*.js mirrors are unsupported and should not exist or be recreated.
 
-import { app, toast, todoDialog, todoForm, todoDialogTitle, todoTitle, todoBody, todoTags, todoStatus, todoEstimationPoints, deleteTodoBtn, closeTodoBtn, settingsDialog, closeSettingsBtn } from './dist/dom/elements.js';
+import { app, toast, todoDialog, todoForm, todoDialogTitle, todoTitle, todoBody, todoTags, todoStatus, todoEstimationPoints, todoPriority, deleteTodoBtn, closeTodoBtn, settingsDialog, closeSettingsBtn } from './dist/dom/elements.js';
 import { initTheme, handleThemeChange, getStoredTheme, THEME_SYSTEM, THEME_DARK, THEME_LIGHT } from './dist/theme.js';
 import { escapeHTML, showToast, showConfirmDialog } from './dist/utils.js';
 import { apiFetch } from './dist/api.js';
@@ -150,6 +150,7 @@ todoForm.addEventListener("submit", async (e) => {
   const tags = getTagsFromChips();
   const columnKey = todoStatus.value;
   const estimationRaw = todoEstimationPoints?.value ?? "";
+  const priorityKey = todoPriority?.value ?? "";
 
   const sprintEl = document.getElementById("todoSprint");
   const sprintField = document.getElementById("todoSprintField");
@@ -175,6 +176,7 @@ todoForm.addEventListener("submit", async (e) => {
         assigneeUserId,
         sprintEnabled: !!showSprint,
         sprintId,
+        priorityKey,
       });
       recordLocalMutation();
       await apiFetch(`/api/board/${getSlug()}/todos/${todo.localId}`, {
@@ -205,6 +207,7 @@ todoForm.addEventListener("submit", async (e) => {
         sprintId,
         assigneeEnabled: !!assigneeEl,
         assigneeUserId,
+        priorityKey,
       });
       recordLocalMutation();
       await apiFetch(`/api/board/${getSlug()}/todos`, {

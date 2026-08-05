@@ -19,8 +19,16 @@ export interface Todo {
   estimationPoints?: number | null;
   assigneeUserId?: number | null;
   sprintId?: number | null;
+  priorityKey?: string | null;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface PriorityTier {
+  key: string;
+  name: string;
+  color: string;
+  position: number;
 }
 
 export interface Tag {
@@ -54,6 +62,7 @@ export interface Board {
   project: Project;
   tags: Tag[];
   columnOrder?: Array<{ key: string; name: string; color?: string; isDone: boolean; position?: number }>;
+  priorityOrder?: PriorityTier[];
   columns: Record<string, Todo[]>;
   columnsMeta?: Record<string, { hasMore: boolean; nextCursor: string | null; totalCount?: number }>;
 }
@@ -155,6 +164,7 @@ export interface DashboardTodo {
   projectDominantColor: string;
   estimationPoints?: number | null;
   sprintId?: number | null;
+  priorityKey?: string | null;
   status: TodoStatus;
   statusName: string;
   statusColor: string;
