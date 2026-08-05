@@ -98,9 +98,15 @@ func (s *Server) handlePreparedSlugBoardInitial(
 		writeStoreErr(w, err, true)
 		return
 	}
+	priorities, err := s.store.GetProjectPriorities(ctx, result.Project.ID)
+	if err != nil {
+		writeStoreErr(w, err, true)
+		return
+	}
 	writeJSON(w, http.StatusOK, boardToJSONWithMeta(
 		result.Project,
 		result.Workflow,
+		priorities,
 		result.Tags,
 		result.Columns,
 		result.ColumnsMeta,

@@ -100,6 +100,16 @@ type WorkflowColumn struct {
 	System    bool
 }
 
+// PriorityTier defines one ordered, per-project priority level for todos.
+type PriorityTier struct {
+	ID        int64
+	ProjectID int64
+	Key       string
+	Name      string
+	Color     string
+	Position  int
+}
+
 // SprintFilter represents the sprint filter for board queries.
 // Mode:
 // - "none" = no filter
@@ -259,6 +269,7 @@ type Todo struct {
 	EstimationPoints *int64
 	AssigneeUserID   *int64
 	SprintID         *int64 // NULL = backlog; non-NULL = in that sprint
+	PriorityKey      *string
 	Tags             []string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time

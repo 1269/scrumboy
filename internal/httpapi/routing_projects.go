@@ -265,9 +265,15 @@ func (s *Server) handleProjectsProjectReads(w http.ResponseWriter, r *http.Reque
 			writeStoreErr(w, err, true)
 			return true
 		}
+		priorities, err := s.store.GetProjectPriorities(ctx, result.Project.ID)
+		if err != nil {
+			writeStoreErr(w, err, true)
+			return true
+		}
 		writeJSON(w, http.StatusOK, boardToJSON(
 			result.Project,
 			result.Workflow,
+			priorities,
 			result.Tags,
 			result.Columns,
 		))

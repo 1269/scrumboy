@@ -20,6 +20,7 @@ type DashboardTodo struct {
 	ProjectDominantColor string
 	EstimationPoints     *int64
 	SprintID             *int64
+	PriorityKey          *string
 	ColumnKey            string
 	StatusName           string
 	StatusColor          string
@@ -715,7 +716,7 @@ func (s *Store) listDashboardTodosActivity(ctx context.Context, userID int64, li
 			return nil, nil, fmt.Errorf("%w: invalid dashboard cursor", ErrValidation)
 		}
 		rows, err = s.db.QueryContext(ctx, `
-SELECT t.id, t.local_id, t.title, t.project_id, t.column_key, t.updated_at, t.estimation_points, t.sprint_id,
+SELECT t.id, t.local_id, t.title, t.project_id, t.column_key, t.updated_at, t.estimation_points, t.sprint_id, t.priority_key,
        p.name, p.slug, p.image, p.dominant_color,
        wc.name AS status_name, wc.color AS status_color
 FROM todos t
@@ -728,7 +729,7 @@ LIMIT ?
 `, userID, updatedAtCursor, updatedAtCursor, idCursor, limit+1)
 	} else {
 		rows, err = s.db.QueryContext(ctx, `
-SELECT t.id, t.local_id, t.title, t.project_id, t.column_key, t.updated_at, t.estimation_points, t.sprint_id,
+SELECT t.id, t.local_id, t.title, t.project_id, t.column_key, t.updated_at, t.estimation_points, t.sprint_id, t.priority_key,
        p.name, p.slug, p.image, p.dominant_color,
        wc.name AS status_name, wc.color AS status_color
 FROM todos t
@@ -755,9 +756,10 @@ LIMIT ?
 		var localID sql.NullInt64
 		var estimationPoints sql.NullInt64
 		var sprintID sql.NullInt64
+		var priorityKey sql.NullString
 		var statusName sql.NullString
 		var statusColor sql.NullString
-		if err := rows.Scan(&t.ID, &localID, &t.Title, &t.ProjectID, &columnKey, &updatedAtMs, &estimationPoints, &sprintID, &t.ProjectName, &t.ProjectSlug, &projectImage, &t.ProjectDominantColor, &statusName, &statusColor); err != nil {
+		if err := rows.Scan(&t.ID, &localID, &t.Title, &t.ProjectID, &columnKey, &updatedAtMs, &estimationPoints, &sprintID, &priorityKey, &t.ProjectName, &t.ProjectSlug, &projectImage, &t.ProjectDominantColor, &statusName, &statusColor); err != nil {
 			return nil, nil, fmt.Errorf("scan dashboard todo: %w", err)
 		}
 		if !localID.Valid {
@@ -776,6 +778,10 @@ LIMIT ?
 		if sprintID.Valid {
 			v := sprintID.Int64
 			t.SprintID = &v
+		}
+		if priorityKey.Valid {
+			v := priorityKey.String
+			t.PriorityKey = &v
 		}
 		if statusName.Valid && statusName.String != "" {
 			t.StatusName = statusName.String
@@ -828,7 +834,7 @@ func (s *Store) listDashboardTodosBoard(ctx context.Context, userID int64, limit
 			return nil, nil, fmt.Errorf("%w: invalid dashboard cursor", ErrValidation)
 		}
 		rows, err = s.db.QueryContext(ctx, `
-SELECT t.id, t.local_id, t.title, t.project_id, t.column_key, t.updated_at, t.estimation_points, t.sprint_id,
+SELECT t.id, t.local_id, t.title, t.project_id, t.column_key, t.updated_at, t.estimation_points, t.sprint_id, t.priority_key,
        t.rank, wc.position,
        p.name, p.slug, p.image, p.dominant_color,
        wc.name AS status_name, wc.color AS status_color
@@ -842,7 +848,7 @@ LIMIT ?
 `, userID, pid, wcPos, rank, todoID, limit+1)
 	} else {
 		rows, err = s.db.QueryContext(ctx, `
-SELECT t.id, t.local_id, t.title, t.project_id, t.column_key, t.updated_at, t.estimation_points, t.sprint_id,
+SELECT t.id, t.local_id, t.title, t.project_id, t.column_key, t.updated_at, t.estimation_points, t.sprint_id, t.priority_key,
        t.rank, wc.position,
        p.name, p.slug, p.image, p.dominant_color,
        wc.name AS status_name, wc.color AS status_color
@@ -872,9 +878,10 @@ LIMIT ?
 		var localID sql.NullInt64
 		var estimationPoints sql.NullInt64
 		var sprintID sql.NullInt64
+		var priorityKey sql.NullString
 		var statusName sql.NullString
 		var statusColor sql.NullString
-		if err := rows.Scan(&t.ID, &localID, &t.Title, &t.ProjectID, &columnKey, &updatedAtMs, &estimationPoints, &sprintID,
+		if err := rows.Scan(&t.ID, &localID, &t.Title, &t.ProjectID, &columnKey, &updatedAtMs, &estimationPoints, &sprintID, &priorityKey,
 			&todoRank, &wcPos,
 			&t.ProjectName, &t.ProjectSlug, &projectImage, &t.ProjectDominantColor, &statusName, &statusColor); err != nil {
 			return nil, nil, fmt.Errorf("scan dashboard todo: %w", err)
@@ -895,6 +902,10 @@ LIMIT ?
 		if sprintID.Valid {
 			v := sprintID.Int64
 			t.SprintID = &v
+		}
+		if priorityKey.Valid {
+			v := priorityKey.String
+			t.PriorityKey = &v
 		}
 		if statusName.Valid && statusName.String != "" {
 			t.StatusName = statusName.String

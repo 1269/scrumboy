@@ -285,6 +285,7 @@ type todoJSON struct {
 	EstimationPoints *int64     `json:"estimationPoints,omitempty"`
 	AssigneeUserId   *int64     `json:"assigneeUserId,omitempty"`
 	SprintId         *int64     `json:"sprintId,omitempty"`
+	PriorityKey      *string    `json:"priorityKey,omitempty"`
 	Tags             []string   `json:"tags"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
@@ -304,6 +305,7 @@ func todoToJSON(t store.Todo) todoJSON {
 		EstimationPoints: t.EstimationPoints,
 		AssigneeUserId:   t.AssigneeUserID,
 		SprintId:         t.SprintID,
+		PriorityKey:      t.PriorityKey,
 		Tags:             t.Tags,
 		CreatedAt:        t.CreatedAt,
 		UpdatedAt:        t.UpdatedAt,
@@ -390,6 +392,7 @@ type dashboardTodoJSON struct {
 	ProjectDominantColor string    `json:"projectDominantColor"`
 	EstimationPoints     *int64    `json:"estimationPoints,omitempty"`
 	SprintId             *int64    `json:"sprintId,omitempty"`
+	PriorityKey          *string   `json:"priorityKey,omitempty"`
 	Status               string    `json:"status"`
 	StatusName           string    `json:"statusName"`
 	StatusColor          string    `json:"statusColor"`
@@ -498,6 +501,7 @@ func dashboardTodoToJSON(t store.DashboardTodo) dashboardTodoJSON {
 		ProjectDominantColor: t.ProjectDominantColor,
 		EstimationPoints:     t.EstimationPoints,
 		SprintId:             t.SprintID,
+		PriorityKey:          t.PriorityKey,
 		Status:               strings.ToUpper(t.ColumnKey),
 		StatusName:           t.StatusName,
 		StatusColor:          t.StatusColor,
@@ -553,11 +557,12 @@ type columnMetaJSON struct {
 }
 
 type boardJSON struct {
-	Project     projectJSON               `json:"project"`
-	ColumnOrder []workflowColumnJSON      `json:"columnOrder"`
-	Tags        []tagCountJSON            `json:"tags"`
-	Columns     map[string][]todoJSON     `json:"columns"`
-	ColumnsMeta map[string]columnMetaJSON `json:"columnsMeta,omitempty"`
+	Project       projectJSON               `json:"project"`
+	ColumnOrder   []workflowColumnJSON      `json:"columnOrder"`
+	PriorityOrder []priorityTierJSON        `json:"priorityOrder"`
+	Tags          []tagCountJSON            `json:"tags"`
+	Columns       map[string][]todoJSON     `json:"columns"`
+	ColumnsMeta   map[string]columnMetaJSON `json:"columnsMeta,omitempty"`
 }
 
 type lanePageJSON struct {
@@ -593,20 +598,40 @@ type workflowLaneCountsJSON struct {
 	CountsByColumnKey map[string]int `json:"countsByColumnKey"`
 }
 
-func boardToJSON(p store.Project, workflow []store.WorkflowColumn, tags []store.TagCount, cols map[string][]store.Todo) boardJSON {
-	return boardToJSONWithMeta(p, workflow, tags, cols, nil)
+type priorityTierJSON struct {
+	Key      string `json:"key"`
+	Name     string `json:"name"`
+	Color    string `json:"color"`
+	Position int    `json:"position"`
 }
 
-func boardToJSONWithMeta(p store.Project, workflow []store.WorkflowColumn, tags []store.TagCount, cols map[string][]store.Todo, meta map[string]store.LaneMeta) boardJSON {
+// priorityTierCountsJSON is the body for GET /api/board/{slug}/priorities/counts.
+// Priority tiers with zero todos may be omitted from countsByPriorityKey; clients treat a missing key as 0.
+type priorityTierCountsJSON struct {
+	Slug                string         `json:"slug"`
+	CountsByPriorityKey map[string]int `json:"countsByPriorityKey"`
+}
+
+func boardToJSON(p store.Project, workflow []store.WorkflowColumn, priorities []store.PriorityTier, tags []store.TagCount, cols map[string][]store.Todo) boardJSON {
+	return boardToJSONWithMeta(p, workflow, priorities, tags, cols, nil)
+}
+
+func boardToJSONWithMeta(p store.Project, workflow []store.WorkflowColumn, priorities []store.PriorityTier, tags []store.TagCount, cols map[string][]store.Todo, meta map[string]store.LaneMeta) boardJSON {
 	out := boardJSON{
-		Project:     projectToJSON(p),
-		ColumnOrder: make([]workflowColumnJSON, 0, len(workflow)),
-		Tags:        make([]tagCountJSON, 0, len(tags)),
-		Columns:     map[string][]todoJSON{},
+		Project:       projectToJSON(p),
+		ColumnOrder:   make([]workflowColumnJSON, 0, len(workflow)),
+		PriorityOrder: make([]priorityTierJSON, 0, len(priorities)),
+		Tags:          make([]tagCountJSON, 0, len(tags)),
+		Columns:       map[string][]todoJSON{},
 	}
 	for _, wc := range workflow {
 		out.ColumnOrder = append(out.ColumnOrder, workflowColumnJSON{
 			Key: wc.Key, Name: wc.Name, Color: wc.Color, IsDone: wc.IsDone, Position: wc.Position,
+		})
+	}
+	for _, pt := range priorities {
+		out.PriorityOrder = append(out.PriorityOrder, priorityTierJSON{
+			Key: pt.Key, Name: pt.Name, Color: pt.Color, Position: pt.Position,
 		})
 	}
 	for _, tc := range tags {
@@ -725,6 +750,7 @@ type todoExportJSON struct {
 	Rank             int64     `json:"rank"`
 	EstimationPoints *int64    `json:"estimationPoints,omitempty"`
 	AssigneeUserId   *int64    `json:"assigneeUserId,omitempty"`
+	PriorityKey      *string   `json:"priorityKey,omitempty"`
 	Tags             []string  `json:"tags"`
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
@@ -754,6 +780,7 @@ func exportDataToJSON(data *store.ExportData) exportDataJSON {
 				Rank:             t.Rank,
 				EstimationPoints: t.EstimationPoints,
 				AssigneeUserId:   t.AssigneeUserId,
+				PriorityKey:      t.PriorityKey,
 				Tags:             t.Tags,
 				CreatedAt:        t.CreatedAt,
 				UpdatedAt:        t.UpdatedAt,

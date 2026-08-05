@@ -52,6 +52,7 @@ func (s *Server) handleTodosPatchOrDelete(w http.ResponseWriter, r *http.Request
 			Tags             []string `json:"tags"`
 			EstimationPoints *int64   `json:"estimationPoints"`
 			AssigneeUserID   *int64   `json:"assigneeUserId"`
+			PriorityKey      *string  `json:"priorityKey"`
 		}
 		payload, err := json.Marshal(raw)
 		if err != nil {
@@ -68,6 +69,7 @@ func (s *Server) handleTodosPatchOrDelete(w http.ResponseWriter, r *http.Request
 			Tags:             in.Tags,
 			EstimationPoints: in.EstimationPoints,
 			AssigneeUserID:   in.AssigneeUserID,
+			PriorityKey:      in.PriorityKey,
 		}, s.storeMode())
 		if err != nil {
 			writeStoreErr(w, err, true)
