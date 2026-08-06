@@ -8,11 +8,12 @@ import (
 )
 
 var (
-	// ErrActorRequired reports that the exact context supplied to REST
-	// preparation does not contain an authenticated requester.
+	// ErrActorRequired reports that the exact context supplied to sprint
+	// definition preparation does not contain an authenticated requester.
 	ErrActorRequired = errors.New("sprint definition actor required")
-	// ErrMaintainerRequired preserves the canonical REST policy that collapses
-	// role lookup failures and insufficient roles into one authorization result.
+	// ErrMaintainerRequired reports that the authenticated requester lacks the
+	// required role. REST preparation also deliberately uses this result to
+	// collapse role lookup failures; MCP preparation returns those failures raw.
 	ErrMaintainerRequired = errors.New("sprint definition maintainer required")
 )
 
