@@ -3,9 +3,11 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
+	sprintapp "scrumboy/internal/application/sprint"
 	"scrumboy/internal/store"
 )
 
@@ -29,6 +31,19 @@ type sprintUpdateEnvelope struct {
 	ProjectSlug string          `json:"projectSlug"`
 	SprintID    int64           `json:"sprintId"`
 	Patch       json.RawMessage `json:"patch"`
+}
+
+func mapSprintDefinitionPrepareError(err error) *adapterError {
+	switch {
+	case errors.Is(err, sprintapp.ErrActorRequired):
+		return newAdapterError(http.StatusUnauthorized, CodeAuthRequired, "Sign-in required for this tool", nil)
+	case errors.Is(err, sprintapp.ErrMaintainerRequired):
+		return newAdapterError(http.StatusForbidden, CodeForbidden, "maintainer or higher required", nil)
+	case errors.Is(err, sprintapp.ErrSprintNotInProject):
+		return newAdapterError(http.StatusNotFound, CodeNotFound, "not found", nil)
+	default:
+		return mapStoreError(err)
+	}
 }
 
 func (a *Adapter) handleSprintsList(ctx context.Context, input any) (any, map[string]any, *adapterError) {
@@ -212,24 +227,19 @@ func (a *Adapter) handleSprintsCreate(ctx context.Context, input any) (any, map[
 		return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid plannedEndAt", map[string]any{"field": "plannedEndAt", "detail": parseErr.Error()})
 	}
 
-	pc, pcErr := a.store.GetProjectContextBySlug(ctx, in.ProjectSlug, a.storeMode())
-	if pcErr != nil {
-		return nil, nil, mapStoreError(pcErr)
+	prepared, prepareErr := a.sprintDefinitions.PrepareCreate(ctx, sprintapp.MCPProjectTarget{
+		ProjectSlug: in.ProjectSlug,
+		Mode:        a.storeMode(),
+	})
+	if prepareErr != nil {
+		return nil, nil, mapSprintDefinitionPrepareError(prepareErr)
 	}
 
-	userID, ok := store.UserIDFromContext(ctx)
-	if !ok {
-		return nil, nil, newAdapterError(http.StatusUnauthorized, CodeAuthRequired, "Sign-in required for this tool", nil)
-	}
-	role, roleErr := a.store.GetProjectRole(ctx, pc.Project.ID, userID)
-	if roleErr != nil {
-		return nil, nil, mapStoreError(roleErr)
-	}
-	if !role.HasMinimumRole(store.RoleMaintainer) {
-		return nil, nil, newAdapterError(http.StatusForbidden, CodeForbidden, "maintainer or higher required", nil)
-	}
-
-	sp, createErr := a.store.CreateSprint(ctx, pc.Project.ID, in.Name, plannedStartAt, plannedEndAt)
+	sp, createErr := prepared.Create(sprintapp.CreateCommand{
+		Name:           in.Name,
+		PlannedStartAt: plannedStartAt,
+		PlannedEndAt:   plannedEndAt,
+	})
 	if createErr != nil {
 		return nil, nil, mapStoreError(createErr)
 	}
@@ -268,46 +278,23 @@ func (a *Adapter) handleSprintsUpdate(ctx context.Context, input any) (any, map[
 		return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "missing patch", map[string]any{"field": "patch"})
 	}
 
-	pc, pcErr := a.store.GetProjectContextBySlug(ctx, env.ProjectSlug, a.storeMode())
-	if pcErr != nil {
-		return nil, nil, mapStoreError(pcErr)
-	}
-	userID, ok := store.UserIDFromContext(ctx)
-	if !ok {
-		return nil, nil, newAdapterError(http.StatusUnauthorized, CodeAuthRequired, "Sign-in required for this tool", nil)
-	}
-	role, roleErr := a.store.GetProjectRole(ctx, pc.Project.ID, userID)
-	if roleErr != nil {
-		return nil, nil, mapStoreError(roleErr)
-	}
-	if !role.HasMinimumRole(store.RoleMaintainer) {
-		return nil, nil, newAdapterError(http.StatusForbidden, CodeForbidden, "maintainer or higher required", nil)
+	prepared, prepareErr := a.sprintDefinitions.PrepareUpdate(ctx, sprintapp.MCPSprintTarget{
+		ProjectSlug: env.ProjectSlug,
+		SprintID:    env.SprintID,
+		Mode:        a.storeMode(),
+	})
+	if prepareErr != nil {
+		return nil, nil, mapSprintDefinitionPrepareError(prepareErr)
 	}
 
-	sp, getErr := a.store.GetSprintByID(ctx, env.SprintID)
-	if getErr != nil {
-		return nil, nil, mapStoreError(getErr)
-	}
-	if sp.ProjectID != pc.Project.ID {
-		return nil, nil, newAdapterError(http.StatusNotFound, CodeNotFound, "not found", nil)
-	}
-
-	updateIn, changed, patchErr := buildSprintUpdateInput(env.Patch)
+	command, patchErr := buildSprintUpdateCommand(env.Patch)
 	if patchErr != nil {
 		return nil, nil, patchErr
 	}
-	if !changed {
-		return map[string]any{
-			"sprint": sprintToItem(env.ProjectSlug, sp, nil),
-		}, map[string]any{}, nil
-	}
 
-	if err := a.store.UpdateSprint(ctx, env.SprintID, updateIn); err != nil {
-		return nil, nil, mapStoreError(err)
-	}
-	updated, updatedErr := a.store.GetSprintByID(ctx, env.SprintID)
-	if updatedErr != nil {
-		return nil, nil, mapStoreError(updatedErr)
+	updated, updateErr := prepared.Update(command)
+	if updateErr != nil {
+		return nil, nil, mapStoreError(updateErr)
 	}
 
 	return map[string]any{
@@ -492,13 +479,13 @@ func sprintToItem(projectSlug string, sp store.Sprint, todoCount *int64) sprintI
 	}
 }
 
-func buildSprintUpdateInput(patchRaw json.RawMessage) (store.UpdateSprintInput, bool, *adapterError) {
+func buildSprintUpdateCommand(patchRaw json.RawMessage) (sprintapp.UpdateCommand, *adapterError) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(patchRaw, &raw); err != nil {
-		return store.UpdateSprintInput{}, false, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid patch", map[string]any{"detail": err.Error()})
+		return sprintapp.UpdateCommand{}, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid patch", map[string]any{"detail": err.Error()})
 	}
 	if raw == nil {
-		return store.UpdateSprintInput{}, false, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid patch", map[string]any{"field": "patch"})
+		return sprintapp.UpdateCommand{}, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid patch", map[string]any{"field": "patch"})
 	}
 
 	allowed := map[string]struct{}{
@@ -508,50 +495,46 @@ func buildSprintUpdateInput(patchRaw json.RawMessage) (store.UpdateSprintInput, 
 	}
 	for key := range raw {
 		if _, ok := allowed[key]; !ok {
-			return store.UpdateSprintInput{}, false, newAdapterError(http.StatusBadRequest, CodeValidationError, "unsupported patch field", map[string]any{"field": key})
+			return sprintapp.UpdateCommand{}, newAdapterError(http.StatusBadRequest, CodeValidationError, "unsupported patch field", map[string]any{"field": key})
 		}
 	}
 
-	var in store.UpdateSprintInput
-	changed := false
+	var command sprintapp.UpdateCommand
 
 	if v, ok := raw["name"]; ok {
 		if isNullJSON(v) {
-			return store.UpdateSprintInput{}, false, newAdapterError(http.StatusBadRequest, CodeValidationError, "name cannot be null", map[string]any{"field": "name"})
+			return sprintapp.UpdateCommand{}, newAdapterError(http.StatusBadRequest, CodeValidationError, "name cannot be null", map[string]any{"field": "name"})
 		}
 		var name string
 		if err := json.Unmarshal(v, &name); err != nil {
-			return store.UpdateSprintInput{}, false, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid name", map[string]any{"field": "name"})
+			return sprintapp.UpdateCommand{}, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid name", map[string]any{"field": "name"})
 		}
-		in.Name = &name
-		changed = true
+		command.Name = &name
 	}
 
 	if v, ok := raw["plannedStartAt"]; ok {
 		if isNullJSON(v) {
-			return store.UpdateSprintInput{}, false, newAdapterError(http.StatusBadRequest, CodeValidationError, "plannedStartAt cannot be null", map[string]any{"field": "plannedStartAt"})
+			return sprintapp.UpdateCommand{}, newAdapterError(http.StatusBadRequest, CodeValidationError, "plannedStartAt cannot be null", map[string]any{"field": "plannedStartAt"})
 		}
 		var ms int64
 		if err := json.Unmarshal(v, &ms); err != nil {
-			return store.UpdateSprintInput{}, false, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid plannedStartAt", map[string]any{"field": "plannedStartAt"})
+			return sprintapp.UpdateCommand{}, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid plannedStartAt", map[string]any{"field": "plannedStartAt"})
 		}
 		t := time.UnixMilli(ms).UTC()
-		in.PlannedStartAt = &t
-		changed = true
+		command.PlannedStartAt = &t
 	}
 
 	if v, ok := raw["plannedEndAt"]; ok {
 		if isNullJSON(v) {
-			return store.UpdateSprintInput{}, false, newAdapterError(http.StatusBadRequest, CodeValidationError, "plannedEndAt cannot be null", map[string]any{"field": "plannedEndAt"})
+			return sprintapp.UpdateCommand{}, newAdapterError(http.StatusBadRequest, CodeValidationError, "plannedEndAt cannot be null", map[string]any{"field": "plannedEndAt"})
 		}
 		var ms int64
 		if err := json.Unmarshal(v, &ms); err != nil {
-			return store.UpdateSprintInput{}, false, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid plannedEndAt", map[string]any{"field": "plannedEndAt"})
+			return sprintapp.UpdateCommand{}, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid plannedEndAt", map[string]any{"field": "plannedEndAt"})
 		}
 		t := time.UnixMilli(ms).UTC()
-		in.PlannedEndAt = &t
-		changed = true
+		command.PlannedEndAt = &t
 	}
 
-	return in, changed, nil
+	return command, nil
 }
