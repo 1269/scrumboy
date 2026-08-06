@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	sprintapp "scrumboy/internal/application/sprint"
 	todoapp "scrumboy/internal/application/todo"
 	todolinkapp "scrumboy/internal/application/todolink"
 	workflowapp "scrumboy/internal/application/workflow"
@@ -20,6 +21,17 @@ func writeWorkflowMutationPrepareError(w http.ResponseWriter, err error) {
 	case errors.Is(err, workflowapp.ErrActorRequired):
 		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
 	case errors.Is(err, workflowapp.ErrMaintainerRequired):
+		writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
+	default:
+		writeInternal(w, err)
+	}
+}
+
+func writeSprintDefinitionPrepareError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, sprintapp.ErrActorRequired):
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+	case errors.Is(err, sprintapp.ErrMaintainerRequired):
 		writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
 	default:
 		writeInternal(w, err)
@@ -758,14 +770,11 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 	// POST /api/board/{slug}/sprints - create sprint (Maintainer+)
 	if len(rest) == 2 && rest[1] == "sprints" && r.Method == http.MethodPost {
 		ctx := s.requestContext(r)
-		userID, ok := store.UserIDFromContext(ctx)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
-			return true
-		}
-		role, err := s.store.GetProjectRole(ctx, project.ID, userID)
-		if err != nil || !role.HasMinimumRole(store.RoleMaintainer) {
-			writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
+		prepared, err := s.sprintDefinitions.PrepareCreate(ctx, sprintapp.ResolvedRESTProjectTarget{
+			ProjectID: project.ID,
+		})
+		if err != nil {
+			writeSprintDefinitionPrepareError(w, err)
 			return true
 		}
 		var in struct {
@@ -780,12 +789,15 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 			writeValidationError(w, "name required", "name_required", map[string]any{"field": "name"})
 			return true
 		}
-		sprint, err := s.store.CreateSprint(ctx, project.ID, in.Name, time.UnixMilli(in.PlannedStartAt), time.UnixMilli(in.PlannedEndAt))
+		sprint, err := prepared.Create(sprintapp.CreateCommand{
+			Name:           in.Name,
+			PlannedStartAt: time.UnixMilli(in.PlannedStartAt),
+			PlannedEndAt:   time.UnixMilli(in.PlannedEndAt),
+		})
 		if err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		s.emitRefreshNeeded(s.requestContext(r), project.ID, "sprint_created")
 		writeJSON(w, http.StatusCreated, sprintToJSON(sprint))
 		return true
 	}
@@ -828,14 +840,12 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 
 		case http.MethodPatch:
 			ctx := s.requestContext(r)
-			userID, ok := store.UserIDFromContext(ctx)
-			if !ok {
-				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
-				return true
-			}
-			role, err := s.store.GetProjectRole(ctx, project.ID, userID)
-			if err != nil || !role.HasMinimumRole(store.RoleMaintainer) {
-				writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
+			prepared, err := s.sprintDefinitions.PrepareUpdate(ctx, sprintapp.ResolvedRESTSprintTarget{
+				ProjectID: project.ID,
+				SprintID:  sp.ID,
+			})
+			if err != nil {
+				writeSprintDefinitionPrepareError(w, err)
 				return true
 			}
 			var in struct {
@@ -846,23 +856,19 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 			if err := readJSON(w, r, s.maxBody, &in); err != nil {
 				return true
 			}
-			opts := store.UpdateSprintInput{}
-			if in.Name != nil {
-				opts.Name = in.Name
-			}
+			command := sprintapp.UpdateCommand{Name: in.Name}
 			if in.PlannedStartAt != nil {
 				t := time.UnixMilli(*in.PlannedStartAt)
-				opts.PlannedStartAt = &t
+				command.PlannedStartAt = &t
 			}
 			if in.PlannedEndAt != nil {
 				t := time.UnixMilli(*in.PlannedEndAt)
-				opts.PlannedEndAt = &t
+				command.PlannedEndAt = &t
 			}
-			if err := s.store.UpdateSprint(ctx, sprintID, opts); err != nil {
+			if err := prepared.Update(command); err != nil {
 				writeStoreErr(w, err, true)
 				return true
 			}
-			s.emitRefreshNeeded(s.requestContext(r), project.ID, "sprint_updated")
 			w.WriteHeader(http.StatusNoContent)
 			return true
 

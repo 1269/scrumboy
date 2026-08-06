@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	membershipapp "scrumboy/internal/application/membership"
+	sprintapp "scrumboy/internal/application/sprint"
 	todolinkapp "scrumboy/internal/application/todolink"
 	"scrumboy/internal/eventbus"
 	"scrumboy/internal/store"
@@ -18,6 +19,20 @@ var _ todolinkapp.RESTMutationPublisher = todoLinkMutationPublisher{}
 
 func (p todoLinkMutationPublisher) PublishTodoLinksUpdated(ctx context.Context, projectID int64) {
 	p.server.emitRefreshNeeded(ctx, projectID, "todo_links_updated")
+}
+
+type sprintDefinitionPublisher struct {
+	server *Server
+}
+
+var _ sprintapp.RESTDefinitionPublisher = sprintDefinitionPublisher{}
+
+func (p sprintDefinitionPublisher) PublishSprintCreated(ctx context.Context, projectID int64) {
+	p.server.emitRefreshNeeded(ctx, projectID, "sprint_created")
+}
+
+func (p sprintDefinitionPublisher) PublishSprintUpdated(ctx context.Context, projectID int64) {
+	p.server.emitRefreshNeeded(ctx, projectID, "sprint_updated")
 }
 
 type membershipMutationPublisher struct {
