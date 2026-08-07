@@ -958,7 +958,16 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
 			return true
 		}
-		if err := s.store.CloseSprint(ctx, sprintID); err != nil {
+		target, err := s.store.GetSprintByID(ctx, sprintID)
+		if err != nil {
+			writeStoreErr(w, err, true)
+			return true
+		}
+		if target.ProjectID != project.ID {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "not found", nil)
+			return true
+		}
+		if err := s.store.CloseSprint(ctx, project.ID, sprintID); err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}

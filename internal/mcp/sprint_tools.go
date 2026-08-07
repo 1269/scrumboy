@@ -437,7 +437,7 @@ func (a *Adapter) handleSprintAction(ctx context.Context, input any, action stri
 		if sp.State != store.SprintStateActive {
 			return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "sprint must be ACTIVE to close", map[string]any{"field": "sprintId"})
 		}
-		if err := a.store.CloseSprint(ctx, in.SprintID); err != nil {
+		if err := a.store.CloseSprint(ctx, pc.Project.ID, in.SprintID); err != nil {
 			return nil, nil, mapStoreError(err)
 		}
 	default:

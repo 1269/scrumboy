@@ -274,7 +274,7 @@ type storeAPI interface {
 	GetSprintByProjectNumber(ctx context.Context, projectID, number int64) (store.Sprint, error)
 	GetActiveSprintByProjectID(ctx context.Context, projectID int64) (*store.Sprint, error)
 	ActivateSprint(ctx context.Context, projectID, sprintID int64) error
-	CloseSprint(ctx context.Context, sprintID int64) error
+	CloseSprint(ctx context.Context, projectID, sprintID int64) error
 	DeleteSprint(ctx context.Context, projectID, sprintID int64) error
 	UpdateTodo(ctx context.Context, todoID int64, in store.UpdateTodoInput, mode store.Mode) (store.Todo, error)
 	DeleteTodo(ctx context.Context, todoID int64, mode store.Mode) error

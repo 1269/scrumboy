@@ -68,6 +68,7 @@ type sprintLifecycleRESTStore struct {
 	activatePID   int64
 	activateID    int64
 	closeCalls    int
+	closePID      int64
 	closeID       int64
 	deleteCalls   int
 	deletePID     int64
@@ -171,19 +172,20 @@ func (s *sprintLifecycleRESTStore) ActivateSprint(ctx context.Context, projectID
 	return s.Store.ActivateSprint(ctx, projectID, sprintID)
 }
 
-func (s *sprintLifecycleRESTStore) CloseSprint(ctx context.Context, sprintID int64) error {
+func (s *sprintLifecycleRESTStore) CloseSprint(ctx context.Context, projectID, sprintID int64) error {
 	if !s.record("close") {
-		return s.Store.CloseSprint(ctx, sprintID)
+		return s.Store.CloseSprint(ctx, projectID, sprintID)
 	}
 	s.mu.Lock()
 	s.closeCalls++
+	s.closePID = projectID
 	s.closeID = sprintID
 	err := s.closeErr
 	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	return s.Store.CloseSprint(ctx, sprintID)
+	return s.Store.CloseSprint(ctx, projectID, sprintID)
 }
 
 func (s *sprintLifecycleRESTStore) DeleteSprint(ctx context.Context, projectID, sprintID int64) error {
@@ -326,7 +328,7 @@ func createSprintLifecycleRESTSprint(t *testing.T, fx *sprintLifecycleRESTFixtur
 		}
 	}
 	if state == store.SprintStateClosed {
-		if err := fx.st.CloseSprint(fx.ownerCtx, sp.ID); err != nil {
+		if err := fx.st.CloseSprint(fx.ownerCtx, fx.project.ID, sp.ID); err != nil {
 			t.Fatalf("CloseSprint setup: %v", err)
 		}
 	}
@@ -542,9 +544,9 @@ func TestSprintLifecycleRESTCloseContract(t *testing.T) {
 		if resp.StatusCode != http.StatusNoContent || len(body) != 0 {
 			t.Fatalf("close status=%d body=%q", resp.StatusCode, body)
 		}
-		assertSprintLifecycleRESTTrace(t, fx.wrapped, "access", "role", "close")
-		if fx.wrapped.targetReads != 0 || fx.wrapped.closeCalls != 1 || fx.wrapped.closeID != sp.ID {
-			t.Fatalf("close observations=(targetReads=%d calls=%d id=%d)", fx.wrapped.targetReads, fx.wrapped.closeCalls, fx.wrapped.closeID)
+		assertSprintLifecycleRESTTrace(t, fx.wrapped, "access", "role", "target", "close")
+		if fx.wrapped.targetReads != 1 || !reflect.DeepEqual(fx.wrapped.targetIDs, []int64{sp.ID}) || fx.wrapped.closeCalls != 1 || fx.wrapped.closePID != fx.project.ID || fx.wrapped.closeID != sp.ID {
+			t.Fatalf("close observations=(targetReads=%d ids=%v calls=%d project=%d sprint=%d)", fx.wrapped.targetReads, fx.wrapped.targetIDs, fx.wrapped.closeCalls, fx.wrapped.closePID, fx.wrapped.closeID)
 		}
 		after := getSprintLifecycleRESTSprint(t, fx, sp.ID)
 		if after.State != store.SprintStateClosed || after.ClosedAt == nil || before.StartedAt == nil || after.StartedAt == nil || !after.StartedAt.Equal(*before.StartedAt) {
@@ -563,9 +565,9 @@ func TestSprintLifecycleRESTCloseContract(t *testing.T) {
 			var got apiErrorEnvelope
 			resp, _ := doJSON(t, fx.client, http.MethodPost, fx.actionURL(sp.ID, "close"), map[string]any{}, &got)
 			assertSprintLifecycleRESTError(t, resp, got, http.StatusNotFound, "NOT_FOUND", "not found", nil)
-			assertSprintLifecycleRESTTrace(t, fx.wrapped, "access", "role", "close")
-			if fx.wrapped.closeCalls != 1 || !reflect.DeepEqual(getSprintLifecycleRESTSprint(t, fx, sp.ID), before) {
-				t.Fatalf("failed close calls=%d or changed state", fx.wrapped.closeCalls)
+			assertSprintLifecycleRESTTrace(t, fx.wrapped, "access", "role", "target", "close")
+			if fx.wrapped.targetReads != 1 || !reflect.DeepEqual(fx.wrapped.targetIDs, []int64{sp.ID}) || fx.wrapped.closeCalls != 1 || fx.wrapped.closePID != fx.project.ID || fx.wrapped.closeID != sp.ID || !reflect.DeepEqual(getSprintLifecycleRESTSprint(t, fx, sp.ID), before) {
+				t.Fatalf("failed close observations=(reads=%d ids=%v calls=%d project=%d sprint=%d) or changed state", fx.wrapped.targetReads, fx.wrapped.targetIDs, fx.wrapped.closeCalls, fx.wrapped.closePID, fx.wrapped.closeID)
 			}
 			assertSprintLifecycleRESTSilence(t, fx)
 		})
@@ -577,17 +579,17 @@ func TestSprintLifecycleRESTCloseContract(t *testing.T) {
 		var got apiErrorEnvelope
 		resp, _ := doJSON(t, fx.client, http.MethodPost, fx.actionURL(900002, "close"), map[string]any{}, &got)
 		assertSprintLifecycleRESTError(t, resp, got, http.StatusNotFound, "NOT_FOUND", "not found", nil)
-		assertSprintLifecycleRESTTrace(t, fx.wrapped, "access", "role", "close")
-		if fx.wrapped.closeCalls != 1 {
-			t.Fatalf("missing close calls=%d, want one", fx.wrapped.closeCalls)
+		assertSprintLifecycleRESTTrace(t, fx.wrapped, "access", "role", "target")
+		if fx.wrapped.targetReads != 1 || !reflect.DeepEqual(fx.wrapped.targetIDs, []int64{900002}) || fx.wrapped.closeCalls != 0 {
+			t.Fatalf("missing close observations=(reads=%d ids=%v calls=%d)", fx.wrapped.targetReads, fx.wrapped.targetIDs, fx.wrapped.closeCalls)
 		}
 		assertSprintLifecycleRESTSilence(t, fx)
 	})
 }
 
-func TestSprintLifecycleRESTCloseCrossProjectExploitCurrentBehavior(t *testing.T) {
-	fx := newSprintLifecycleRESTFixture(t, "rest-lifecycle-close-exploit-route-a")
-	projectB, err := fx.st.CreateProject(fx.ownerCtx, "rest-lifecycle-close-exploit-project-b")
+func TestSprintLifecycleRESTCloseRejectsForeignProjectTarget(t *testing.T) {
+	fx := newSprintLifecycleRESTFixture(t, "rest-lifecycle-close-foreign-route-a")
+	projectB, err := fx.st.CreateProject(fx.ownerCtx, "rest-lifecycle-close-foreign-project-b")
 	if err != nil {
 		t.Fatalf("CreateProject B: %v", err)
 	}
@@ -612,21 +614,20 @@ func TestSprintLifecycleRESTCloseCrossProjectExploitCurrentBehavior(t *testing.T
 	}
 	fx.wrapped.activateTrace()
 
-	resp, body := doJSON(t, fx.client, http.MethodPost, fx.actionURL(foreign.ID, "close"), map[string]any{}, nil)
-	if resp.StatusCode != http.StatusNoContent || len(body) != 0 {
-		t.Fatalf("cross-project close status=%d body=%q, want current 204 empty behavior", resp.StatusCode, body)
+	var got apiErrorEnvelope
+	resp, _ := doJSON(t, fx.client, http.MethodPost, fx.actionURL(foreign.ID, "close"), map[string]any{}, &got)
+	assertSprintLifecycleRESTError(t, resp, got, http.StatusNotFound, "NOT_FOUND", "not found", nil)
+	assertSprintLifecycleRESTTrace(t, fx.wrapped, "access", "role", "target")
+	if fx.wrapped.rolePID != fx.project.ID || fx.wrapped.roleUID != fx.actorID || fx.wrapped.targetReads != 1 || !reflect.DeepEqual(fx.wrapped.targetIDs, []int64{foreign.ID}) || fx.wrapped.closeCalls != 0 {
+		t.Fatalf("cross-project observations=(roleProject=%d actor=%d reads=%d ids=%v calls=%d)", fx.wrapped.rolePID, fx.wrapped.roleUID, fx.wrapped.targetReads, fx.wrapped.targetIDs, fx.wrapped.closeCalls)
 	}
-	assertSprintLifecycleRESTTrace(t, fx.wrapped, "access", "role", "close")
-	if fx.wrapped.rolePID != fx.project.ID || fx.wrapped.roleUID != fx.actorID || fx.wrapped.closeCalls != 1 || fx.wrapped.closeID != foreign.ID {
-		t.Fatalf("cross-project observations=(roleProject=%d actor=%d calls=%d sprint=%d)", fx.wrapped.rolePID, fx.wrapped.roleUID, fx.wrapped.closeCalls, fx.wrapped.closeID)
+	if after := getSprintLifecycleRESTSprint(t, fx, foreign.ID); after.ProjectID != projectB.ID || after.State != store.SprintStateActive || after.ClosedAt != nil {
+		t.Fatalf("foreign sprint changed after rejection=%+v", after)
 	}
-	if after := getSprintLifecycleRESTSprint(t, fx, foreign.ID); after.ProjectID != projectB.ID || after.State != store.SprintStateClosed || after.ClosedAt == nil {
-		t.Fatalf("foreign sprint after current exploit=%+v", after)
-	}
-	assertSprintLifecycleRESTRefresh(t, fx, fx.project.ID, "sprint_closed")
+	assertSprintLifecycleRESTSilence(t, fx)
 	for _, event := range fx.collector.snapshot() {
-		if event.ProjectID == projectB.ID {
-			t.Fatalf("unexpected refresh attributed to mutated project B: %+v", event)
+		if event.ProjectID == fx.project.ID || event.ProjectID == projectB.ID {
+			t.Fatalf("unexpected refresh after foreign close rejection: %+v", event)
 		}
 	}
 }
@@ -875,7 +876,8 @@ func TestSprintLifecycleRESTDependencyFailureContract(t *testing.T) {
 		{operation: "activate", stage: "mutation", wantTrace: []string{"access", "role", "activate"}, wantStatus: 500, wantCode: "INTERNAL", wantMessage: "internal error", wantDetails: map[string]any{"detail": sentinel.Error()}},
 		{operation: "close", stage: "access", wantTrace: []string{"access"}, wantStatus: 500, wantCode: "INTERNAL", wantMessage: "internal error", wantDetails: map[string]any{"detail": sentinel.Error()}},
 		{operation: "close", stage: "role", wantTrace: []string{"access", "role"}, wantStatus: 403, wantCode: "FORBIDDEN", wantMessage: "maintainer or higher required"},
-		{operation: "close", stage: "mutation", wantTrace: []string{"access", "role", "close"}, wantStatus: 500, wantCode: "INTERNAL", wantMessage: "internal error", wantDetails: map[string]any{"detail": sentinel.Error()}},
+		{operation: "close", stage: "target", wantTrace: []string{"access", "role", "target"}, wantStatus: 500, wantCode: "INTERNAL", wantMessage: "internal error", wantDetails: map[string]any{"detail": sentinel.Error()}},
+		{operation: "close", stage: "mutation", wantTrace: []string{"access", "role", "target", "close"}, wantStatus: 500, wantCode: "INTERNAL", wantMessage: "internal error", wantDetails: map[string]any{"detail": sentinel.Error()}},
 		{operation: "delete", stage: "access", wantTrace: []string{"access"}, wantStatus: 500, wantCode: "INTERNAL", wantMessage: "internal error", wantDetails: map[string]any{"detail": sentinel.Error()}},
 		{operation: "delete", stage: "target", wantTrace: []string{"access", "target"}, wantStatus: 500, wantCode: "INTERNAL", wantMessage: "internal error", wantDetails: map[string]any{"detail": sentinel.Error()}},
 		{operation: "delete", stage: "role", wantTrace: []string{"access", "target", "role"}, wantStatus: 403, wantCode: "FORBIDDEN", wantMessage: "maintainer or higher required"},
@@ -942,7 +944,8 @@ func TestSprintLifecycleRESTCancellationContract(t *testing.T) {
 		{operation: "activate", stage: "mutation", wantTrace: []string{"access", "role", "activate"}},
 		{operation: "close", stage: "access", wantTrace: []string{"access"}},
 		{operation: "close", stage: "role", wantTrace: []string{"access", "role"}},
-		{operation: "close", stage: "mutation", wantTrace: []string{"access", "role", "close"}},
+		{operation: "close", stage: "target", wantTrace: []string{"access", "role", "target"}},
+		{operation: "close", stage: "mutation", wantTrace: []string{"access", "role", "target", "close"}},
 		{operation: "delete", stage: "access", wantTrace: []string{"access"}},
 		{operation: "delete", stage: "target", wantTrace: []string{"access", "target"}},
 		{operation: "delete", stage: "role", wantTrace: []string{"access", "target", "role"}},
@@ -1040,7 +1043,9 @@ func TestSprintLifecycleRESTMutationErrorMappingContract(t *testing.T) {
 				resp, _ := doJSON(t, fx.client, method, path, map[string]any{}, &got)
 				assertSprintLifecycleRESTError(t, resp, got, tc.wantStatus, tc.wantCode, tc.wantMessage, nil)
 				wantTrace := []string{"access", "role", operation}
-				if operation == "delete" {
+				if operation == "close" {
+					wantTrace = []string{"access", "role", "target", "close"}
+				} else if operation == "delete" {
 					wantTrace = []string{"access", "target", "role", "delete"}
 				}
 				assertSprintLifecycleRESTTrace(t, fx.wrapped, wantTrace...)

@@ -122,7 +122,7 @@ func TestSprintLifecycleStoreActivateContract(t *testing.T) {
 		if err := st.ActivateSprint(ctx, project.ID, sp.ID); err != nil {
 			t.Fatalf("ActivateSprint setup: %v", err)
 		}
-		if err := st.CloseSprint(ctx, sp.ID); err != nil {
+		if err := st.CloseSprint(ctx, project.ID, sp.ID); err != nil {
 			t.Fatalf("CloseSprint setup: %v", err)
 		}
 
@@ -280,14 +280,14 @@ func TestSprintLifecycleStoreCloseCurrentContract(t *testing.T) {
 		}
 		before := getLifecycleSprint(t, st, sp.ID)
 
-		if err := st.CloseSprint(ctx, sp.ID); err != nil {
+		if err := st.CloseSprint(ctx, project.ID, sp.ID); err != nil {
 			t.Fatalf("CloseSprint: %v", err)
 		}
 		after := assertLifecycleState(t, st, sp.ID, SprintStateClosed)
 		if after.ClosedAt == nil || after.StartedAt == nil || before.StartedAt == nil || !after.StartedAt.Equal(*before.StartedAt) {
 			t.Fatalf("closed sprint timestamps before=%+v after=%+v", before, after)
 		}
-		if err := st.CloseSprint(ctx, sp.ID); !errors.Is(err, ErrNotFound) {
+		if err := st.CloseSprint(ctx, project.ID, sp.ID); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("repeat CloseSprint error=%v, want ErrNotFound", err)
 		}
 	})
@@ -303,16 +303,16 @@ func TestSprintLifecycleStoreCloseCurrentContract(t *testing.T) {
 		now := time.Now().UTC()
 		sp := createLifecycleSprint(t, st, project.ID, "Planned", now.Add(-time.Hour), now.Add(24*time.Hour))
 
-		if err := st.CloseSprint(ctx, sp.ID); !errors.Is(err, ErrNotFound) {
+		if err := st.CloseSprint(ctx, project.ID, sp.ID); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("planned CloseSprint error=%v, want ErrNotFound", err)
 		}
-		if err := st.CloseSprint(ctx, sp.ID+100000); !errors.Is(err, ErrNotFound) {
+		if err := st.CloseSprint(ctx, project.ID, sp.ID+100000); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("missing CloseSprint error=%v, want ErrNotFound", err)
 		}
 		assertLifecycleState(t, st, sp.ID, SprintStatePlanned)
 	})
 
-	t.Run("global row id closes another project without project input", func(t *testing.T) {
+	t.Run("foreign project is rejected by durable mutation authority", func(t *testing.T) {
 		st, cleanup := newTestStore(t)
 		defer cleanup()
 		ctx := context.Background()
@@ -333,8 +333,12 @@ func TestSprintLifecycleStoreCloseCurrentContract(t *testing.T) {
 			t.Fatalf("ActivateSprint B: %v", err)
 		}
 
-		if err := st.CloseSprint(ctx, sp.ID); err != nil {
-			t.Fatalf("CloseSprint(global B id): %v", err)
+		if err := st.CloseSprint(ctx, projectA.ID, sp.ID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("CloseSprint(project A, sprint B) error=%v, want ErrNotFound", err)
+		}
+		assertLifecycleState(t, st, sp.ID, SprintStateActive)
+		if err := st.CloseSprint(ctx, projectB.ID, sp.ID); err != nil {
+			t.Fatalf("CloseSprint(project B, sprint B): %v", err)
 		}
 		assertLifecycleState(t, st, sp.ID, SprintStateClosed)
 	})
@@ -359,7 +363,7 @@ func TestSprintLifecycleStoreDeleteContract(t *testing.T) {
 				}
 			}
 			if state == SprintStateClosed {
-				if err := st.CloseSprint(ctx, sp.ID); err != nil {
+				if err := st.CloseSprint(ctx, project.ID, sp.ID); err != nil {
 					t.Fatalf("CloseSprint setup: %v", err)
 				}
 			}

@@ -43,7 +43,7 @@ type storeAPI interface {
 	GetActiveSprintByProjectID(ctx context.Context, projectID int64) (*store.Sprint, error)
 	GetProjectRole(ctx context.Context, projectID int64, userID int64) (store.ProjectRole, error)
 	ActivateSprint(ctx context.Context, projectID, sprintID int64) error
-	CloseSprint(ctx context.Context, sprintID int64) error
+	CloseSprint(ctx context.Context, projectID, sprintID int64) error
 	DeleteSprint(ctx context.Context, projectID, sprintID int64) error
 	ListTagCounts(ctx context.Context, pc *store.ProjectContext) ([]store.TagCount, error)
 	ListUserTags(ctx context.Context, userID int64) ([]store.TagWithColor, error)

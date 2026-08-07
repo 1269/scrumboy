@@ -51,6 +51,7 @@ type sprintLifecycleMCPStore struct {
 	activateID        int64
 	activateCommitted bool
 	closeCalls        int
+	closePID          int64
 	closeID           int64
 	closeCommitted    bool
 	deleteCalls       int
@@ -173,19 +174,20 @@ func (s *sprintLifecycleMCPStore) ActivateSprint(ctx context.Context, projectID,
 	return nil
 }
 
-func (s *sprintLifecycleMCPStore) CloseSprint(ctx context.Context, sprintID int64) error {
+func (s *sprintLifecycleMCPStore) CloseSprint(ctx context.Context, projectID, sprintID int64) error {
 	if !s.record("close") {
-		return s.Store.CloseSprint(ctx, sprintID)
+		return s.Store.CloseSprint(ctx, projectID, sprintID)
 	}
 	s.mu.Lock()
 	s.closeCalls++
+	s.closePID = projectID
 	s.closeID = sprintID
 	err := s.closeErr
 	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	if err := s.Store.CloseSprint(ctx, sprintID); err != nil {
+	if err := s.Store.CloseSprint(ctx, projectID, sprintID); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -316,7 +318,7 @@ func createSprintLifecycleMCPSprint(t *testing.T, fx *sprintLifecycleMCPFixture,
 		}
 	}
 	if state == store.SprintStateClosed {
-		if err := fx.st.CloseSprint(fx.ownerCtx, sp.ID); err != nil {
+		if err := fx.st.CloseSprint(fx.ownerCtx, fx.project.ID, sp.ID); err != nil {
 			t.Fatalf("CloseSprint setup: %v", err)
 		}
 	}
@@ -505,8 +507,8 @@ func TestSprintLifecycleMCPCloseContract(t *testing.T) {
 			}
 			assertSprintLifecycleMCPItem(t, sprintLifecycleMCPData(t, transport, out), fx.project.Slug, stored)
 			assertSprintLifecycleMCPTrace(t, fx.wrapped, "access", "role", "target", "close", "projection")
-			if fx.wrapped.readCalls != 2 || !reflect.DeepEqual(fx.wrapped.readIDs, []int64{sp.ID, sp.ID}) || fx.wrapped.closeCalls != 1 || fx.wrapped.closeID != sp.ID || !fx.wrapped.closeCommitted {
-				t.Fatalf("close observations=(reads=%d ids=%v calls=%d sprint=%d committed=%v)", fx.wrapped.readCalls, fx.wrapped.readIDs, fx.wrapped.closeCalls, fx.wrapped.closeID, fx.wrapped.closeCommitted)
+			if fx.wrapped.readCalls != 2 || !reflect.DeepEqual(fx.wrapped.readIDs, []int64{sp.ID, sp.ID}) || fx.wrapped.closeCalls != 1 || fx.wrapped.closePID != fx.project.ID || fx.wrapped.closeID != sp.ID || !fx.wrapped.closeCommitted {
+				t.Fatalf("close observations=(reads=%d ids=%v calls=%d project=%d sprint=%d committed=%v)", fx.wrapped.readCalls, fx.wrapped.readIDs, fx.wrapped.closeCalls, fx.wrapped.closePID, fx.wrapped.closeID, fx.wrapped.closeCommitted)
 			}
 			if fx.wrapped.closeID == sp.Number {
 				t.Fatalf("Sprint.Number %d was used as close persistence identity", sp.Number)
