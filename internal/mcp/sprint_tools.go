@@ -46,6 +46,19 @@ func mapSprintDefinitionPrepareError(err error) *adapterError {
 	}
 }
 
+func mapSprintLifecyclePrepareError(err error) *adapterError {
+	switch {
+	case errors.Is(err, sprintapp.ErrSprintMustBePlanned):
+		return newAdapterError(http.StatusBadRequest, CodeValidationError, "sprint must be PLANNED to activate", map[string]any{"field": "sprintId"})
+	case errors.Is(err, sprintapp.ErrSprintEndNotAfterNow):
+		return newAdapterError(http.StatusBadRequest, CodeValidationError, "sprint end date is on or before now; cannot activate", map[string]any{"field": "plannedEndAt"})
+	case errors.Is(err, sprintapp.ErrSprintMustBeActive):
+		return newAdapterError(http.StatusBadRequest, CodeValidationError, "sprint must be ACTIVE to close", map[string]any{"field": "sprintId"})
+	default:
+		return mapSprintDefinitionPrepareError(err)
+	}
+}
+
 func (a *Adapter) handleSprintsList(ctx context.Context, input any) (any, map[string]any, *adapterError) {
 	auth, bootstrapAvailable, err := a.authState(ctx)
 	if err != nil {
@@ -336,32 +349,16 @@ func (a *Adapter) handleSprintsDelete(ctx context.Context, input any) (any, map[
 		return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid sprintId", map[string]any{"field": "sprintId"})
 	}
 
-	pc, pcErr := a.store.GetProjectContextBySlug(ctx, in.ProjectSlug, a.storeMode())
-	if pcErr != nil {
-		return nil, nil, mapStoreError(pcErr)
+	prepared, prepareErr := a.sprintDeletions.PrepareDelete(ctx, sprintapp.MCPDeletionTarget{
+		ProjectSlug: in.ProjectSlug,
+		SprintID:    in.SprintID,
+		Mode:        a.storeMode(),
+	})
+	if prepareErr != nil {
+		return nil, nil, mapSprintDefinitionPrepareError(prepareErr)
 	}
-	userID, ok := store.UserIDFromContext(ctx)
-	if !ok {
-		return nil, nil, newAdapterError(http.StatusUnauthorized, CodeAuthRequired, "Sign-in required for this tool", nil)
-	}
-	role, roleErr := a.store.GetProjectRole(ctx, pc.Project.ID, userID)
-	if roleErr != nil {
-		return nil, nil, mapStoreError(roleErr)
-	}
-	if !role.HasMinimumRole(store.RoleMaintainer) {
-		return nil, nil, newAdapterError(http.StatusForbidden, CodeForbidden, "maintainer or higher required", nil)
-	}
-
-	sp, getErr := a.store.GetSprintByID(ctx, in.SprintID)
-	if getErr != nil {
-		return nil, nil, mapStoreError(getErr)
-	}
-	if sp.ProjectID != pc.Project.ID {
-		return nil, nil, newAdapterError(http.StatusNotFound, CodeNotFound, "not found", nil)
-	}
-
-	if err := a.store.DeleteSprint(ctx, pc.Project.ID, in.SprintID); err != nil {
-		return nil, nil, mapStoreError(err)
+	if deleteErr := prepared.Delete(); deleteErr != nil {
+		return nil, nil, mapStoreError(deleteErr)
 	}
 
 	return map[string]any{
@@ -398,55 +395,38 @@ func (a *Adapter) handleSprintAction(ctx context.Context, input any, action stri
 		return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "invalid sprintId", map[string]any{"field": "sprintId"})
 	}
 
-	pc, pcErr := a.store.GetProjectContextBySlug(ctx, in.ProjectSlug, a.storeMode())
-	if pcErr != nil {
-		return nil, nil, mapStoreError(pcErr)
-	}
-	userID, ok := store.UserIDFromContext(ctx)
-	if !ok {
-		return nil, nil, newAdapterError(http.StatusUnauthorized, CodeAuthRequired, "Sign-in required for this tool", nil)
-	}
-	role, roleErr := a.store.GetProjectRole(ctx, pc.Project.ID, userID)
-	if roleErr != nil {
-		return nil, nil, mapStoreError(roleErr)
-	}
-	if !role.HasMinimumRole(store.RoleMaintainer) {
-		return nil, nil, newAdapterError(http.StatusForbidden, CodeForbidden, "maintainer or higher required", nil)
-	}
-
-	sp, getErr := a.store.GetSprintByID(ctx, in.SprintID)
-	if getErr != nil {
-		return nil, nil, mapStoreError(getErr)
-	}
-	if sp.ProjectID != pc.Project.ID {
-		return nil, nil, newAdapterError(http.StatusNotFound, CodeNotFound, "not found", nil)
-	}
-
+	var updated store.Sprint
 	switch action {
 	case "activate":
-		if sp.State != store.SprintStatePlanned {
-			return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "sprint must be PLANNED to activate", map[string]any{"field": "sprintId"})
+		prepared, prepareErr := a.sprintLifecycle.PrepareActivate(ctx, sprintapp.MCPLifecycleTarget{
+			ProjectSlug: in.ProjectSlug,
+			SprintID:    in.SprintID,
+			Mode:        a.storeMode(),
+		})
+		if prepareErr != nil {
+			return nil, nil, mapSprintLifecyclePrepareError(prepareErr)
 		}
-		if !sp.PlannedEndAt.After(time.Now().UTC()) {
-			return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "sprint end date is on or before now; cannot activate", map[string]any{"field": "plannedEndAt"})
-		}
-		if err := a.store.ActivateSprint(ctx, pc.Project.ID, in.SprintID); err != nil {
-			return nil, nil, mapStoreError(err)
+		var activateErr error
+		updated, activateErr = prepared.Activate()
+		if activateErr != nil {
+			return nil, nil, mapStoreError(activateErr)
 		}
 	case "close":
-		if sp.State != store.SprintStateActive {
-			return nil, nil, newAdapterError(http.StatusBadRequest, CodeValidationError, "sprint must be ACTIVE to close", map[string]any{"field": "sprintId"})
+		prepared, prepareErr := a.sprintLifecycle.PrepareClose(ctx, sprintapp.MCPLifecycleTarget{
+			ProjectSlug: in.ProjectSlug,
+			SprintID:    in.SprintID,
+			Mode:        a.storeMode(),
+		})
+		if prepareErr != nil {
+			return nil, nil, mapSprintLifecyclePrepareError(prepareErr)
 		}
-		if err := a.store.CloseSprint(ctx, pc.Project.ID, in.SprintID); err != nil {
-			return nil, nil, mapStoreError(err)
+		var closeErr error
+		updated, closeErr = prepared.Close()
+		if closeErr != nil {
+			return nil, nil, mapStoreError(closeErr)
 		}
 	default:
 		return nil, nil, newAdapterError(http.StatusInternalServerError, CodeInternal, "internal error", map[string]any{"detail": "unknown sprint action"})
-	}
-
-	updated, updatedErr := a.store.GetSprintByID(ctx, in.SprintID)
-	if updatedErr != nil {
-		return nil, nil, mapStoreError(updatedErr)
 	}
 
 	return map[string]any{

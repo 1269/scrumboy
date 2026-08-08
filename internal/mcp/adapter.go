@@ -39,12 +39,11 @@ type storeAPI interface {
 	ListSprintsWithTodoCount(ctx context.Context, projectID int64) ([]store.SprintWithTodoCount, error)
 	CountUnscheduledTodos(ctx context.Context, projectID int64) (int64, error)
 	sprintapp.DefinitionStore
+	sprintapp.TransitionStore
+	sprintapp.DeletionStore
 	GetSprintByID(ctx context.Context, sprintID int64) (store.Sprint, error)
 	GetActiveSprintByProjectID(ctx context.Context, projectID int64) (*store.Sprint, error)
 	GetProjectRole(ctx context.Context, projectID int64, userID int64) (store.ProjectRole, error)
-	ActivateSprint(ctx context.Context, projectID, sprintID int64) error
-	CloseSprint(ctx context.Context, projectID, sprintID int64) error
-	DeleteSprint(ctx context.Context, projectID, sprintID int64) error
 	ListTagCounts(ctx context.Context, pc *store.ProjectContext) ([]store.TagCount, error)
 	ListUserTags(ctx context.Context, userID int64) ([]store.TagWithColor, error)
 	UpdateTagColor(ctx context.Context, viewerUserID *int64, tagID int64, color *string) error
@@ -94,6 +93,8 @@ type Adapter struct {
 	workflowMutations   *workflowapp.MCPMutationService
 	membershipMutations *membershipapp.MCPMutationService
 	sprintDefinitions   *sprintapp.MCPDefinitionService
+	sprintLifecycle     *sprintapp.MCPLifecycleService
+	sprintDeletions     *sprintapp.MCPDeletionService
 	mode                string
 	tools               toolRegistry
 	publicOrigin        *publicorigin.Resolver
@@ -163,6 +164,18 @@ func New(st storeAPI, opts Options) *Adapter {
 			Roles:       st,
 			Definitions: st,
 			Sprints:     st,
+		}),
+		sprintLifecycle: sprintapp.NewMCPLifecycleService(sprintapp.MCPLifecycleServiceDependencies{
+			Access:      st,
+			Roles:       st,
+			Sprints:     st,
+			Transitions: st,
+		}),
+		sprintDeletions: sprintapp.NewMCPDeletionService(sprintapp.MCPDeletionServiceDependencies{
+			Access:    st,
+			Roles:     st,
+			Sprints:   st,
+			Deletions: st,
 		}),
 		mode:         mode,
 		tools:        make(toolRegistry),
