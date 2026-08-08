@@ -35,6 +35,30 @@ func (p sprintDefinitionPublisher) PublishSprintUpdated(ctx context.Context, pro
 	p.server.emitRefreshNeeded(ctx, projectID, "sprint_updated")
 }
 
+type sprintTransitionPublisher struct {
+	server *Server
+}
+
+var _ sprintapp.RESTTransitionPublisher = sprintTransitionPublisher{}
+
+func (p sprintTransitionPublisher) PublishSprintActivated(ctx context.Context, projectID int64) {
+	p.server.emitRefreshNeeded(ctx, projectID, "sprint_activated")
+}
+
+func (p sprintTransitionPublisher) PublishSprintClosed(ctx context.Context, projectID int64) {
+	p.server.emitRefreshNeeded(ctx, projectID, "sprint_closed")
+}
+
+type sprintDeletionPublisher struct {
+	server *Server
+}
+
+var _ sprintapp.RESTDeletionPublisher = sprintDeletionPublisher{}
+
+func (p sprintDeletionPublisher) PublishSprintDeleted(ctx context.Context, projectID int64) {
+	p.server.emitRefreshNeeded(ctx, projectID, "sprint_deleted")
+}
+
 type membershipMutationPublisher struct {
 	server *Server
 }

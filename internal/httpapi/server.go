@@ -104,6 +104,8 @@ type Server struct {
 	todoUpdates         *todoapp.UpdateService
 	todoLinkMutations   *todolinkapp.RESTMutationService
 	sprintDefinitions   *sprintapp.RESTDefinitionService
+	sprintLifecycle     *sprintapp.RESTLifecycleService
+	sprintDeletions     *sprintapp.RESTDeletionService
 	workflowMutations   *workflowapp.RESTMutationService
 	membershipMutations *membershipapp.RESTMutationService
 
@@ -273,9 +275,8 @@ type storeAPI interface {
 	GetSprintByID(ctx context.Context, sprintID int64) (store.Sprint, error)
 	GetSprintByProjectNumber(ctx context.Context, projectID, number int64) (store.Sprint, error)
 	GetActiveSprintByProjectID(ctx context.Context, projectID int64) (*store.Sprint, error)
-	ActivateSprint(ctx context.Context, projectID, sprintID int64) error
-	CloseSprint(ctx context.Context, projectID, sprintID int64) error
-	DeleteSprint(ctx context.Context, projectID, sprintID int64) error
+	sprintapp.TransitionStore
+	sprintapp.DeletionStore
 	UpdateTodo(ctx context.Context, todoID int64, in store.UpdateTodoInput, mode store.Mode) (store.Todo, error)
 	DeleteTodo(ctx context.Context, todoID int64, mode store.Mode) error
 	GetProjectIDForTodo(ctx context.Context, todoID int64) (int64, error)
@@ -604,6 +605,17 @@ func NewServer(st storeAPI, opts Options) *Server {
 		Roles:       st,
 		Definitions: st,
 		Publisher:   sprintDefinitionPublisher{server: server},
+	})
+	server.sprintLifecycle = sprintapp.NewRESTLifecycleService(sprintapp.RESTLifecycleServiceDependencies{
+		Roles:       st,
+		Sprints:     st,
+		Transitions: st,
+		Publisher:   sprintTransitionPublisher{server: server},
+	})
+	server.sprintDeletions = sprintapp.NewRESTDeletionService(sprintapp.RESTDeletionServiceDependencies{
+		Roles:     st,
+		Deletions: st,
+		Publisher: sprintDeletionPublisher{server: server},
 	})
 	server.workflowMutations = workflowapp.NewRESTMutationService(workflowapp.RESTMutationServiceDependencies{
 		Roles:     st,

@@ -38,6 +38,19 @@ func writeSprintDefinitionPrepareError(w http.ResponseWriter, err error) {
 	}
 }
 
+func writeSprintLifecyclePrepareError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, sprintapp.ErrActorRequired):
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+	case errors.Is(err, sprintapp.ErrMaintainerRequired):
+		writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
+	case errors.Is(err, sprintapp.ErrSprintNotInProject):
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "not found", nil)
+	default:
+		writeStoreErr(w, err, true)
+	}
+}
+
 func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, rest []string) {
 	if len(rest) == 0 {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "not found", nil)
@@ -874,21 +887,18 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 
 		case http.MethodDelete:
 			ctx := s.requestContext(r)
-			userID, ok := store.UserIDFromContext(ctx)
-			if !ok {
-				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+			prepared, err := s.sprintDeletions.PrepareDelete(ctx, sprintapp.DeletionTarget{
+				ProjectID: project.ID,
+				SprintID:  sprintID,
+			})
+			if err != nil {
+				writeSprintLifecyclePrepareError(w, err)
 				return true
 			}
-			role, err := s.store.GetProjectRole(ctx, project.ID, userID)
-			if err != nil || !role.HasMinimumRole(store.RoleMaintainer) {
-				writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
-				return true
-			}
-			if err := s.store.DeleteSprint(ctx, project.ID, sprintID); err != nil {
+			if err := prepared.Delete(); err != nil {
 				writeStoreErr(w, err, true)
 				return true
 			}
-			s.emitRefreshNeeded(s.requestContext(r), project.ID, "sprint_deleted")
 			w.WriteHeader(http.StatusNoContent)
 			return true
 
@@ -921,21 +931,18 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 			return true
 		}
 		ctx := s.requestContext(r)
-		userID, ok := store.UserIDFromContext(ctx)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+		prepared, err := s.sprintLifecycle.PrepareActivate(ctx, sprintapp.TransitionTarget{
+			ProjectID: project.ID,
+			SprintID:  sprintID,
+		})
+		if err != nil {
+			writeSprintLifecyclePrepareError(w, err)
 			return true
 		}
-		role, err := s.store.GetProjectRole(ctx, project.ID, userID)
-		if err != nil || !role.HasMinimumRole(store.RoleMaintainer) {
-			writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
-			return true
-		}
-		if err := s.store.ActivateSprint(ctx, project.ID, sprintID); err != nil {
+		if err := prepared.Activate(); err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		s.emitRefreshNeeded(s.requestContext(r), project.ID, "sprint_activated")
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}
@@ -948,30 +955,18 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 			return true
 		}
 		ctx := s.requestContext(r)
-		userID, ok := store.UserIDFromContext(ctx)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
-			return true
-		}
-		role, err := s.store.GetProjectRole(ctx, project.ID, userID)
-		if err != nil || !role.HasMinimumRole(store.RoleMaintainer) {
-			writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
-			return true
-		}
-		target, err := s.store.GetSprintByID(ctx, sprintID)
+		prepared, err := s.sprintLifecycle.PrepareClose(ctx, sprintapp.TransitionTarget{
+			ProjectID: project.ID,
+			SprintID:  sprintID,
+		})
 		if err != nil {
+			writeSprintLifecyclePrepareError(w, err)
+			return true
+		}
+		if err := prepared.Close(); err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		if target.ProjectID != project.ID {
-			writeError(w, http.StatusNotFound, "NOT_FOUND", "not found", nil)
-			return true
-		}
-		if err := s.store.CloseSprint(ctx, project.ID, sprintID); err != nil {
-			writeStoreErr(w, err, true)
-			return true
-		}
-		s.emitRefreshNeeded(s.requestContext(r), project.ID, "sprint_closed")
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}
