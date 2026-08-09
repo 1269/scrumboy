@@ -394,13 +394,13 @@ func (s *Store) ActivateSprint(ctx context.Context, projectID, sprintID int64) e
 	return tx.Commit()
 }
 
-func (s *Store) CloseSprint(ctx context.Context, sprintID int64) error {
+func (s *Store) CloseSprint(ctx context.Context, projectID, sprintID int64) error {
 	nowMs := time.Now().UTC().UnixMilli()
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE sprints
 		SET state = ?, closed_at = COALESCE(closed_at, ?), updated_at = ?
-		WHERE id = ? AND state = ?
-	`, SprintStateClosed, nowMs, nowMs, sprintID, SprintStateActive)
+		WHERE id = ? AND project_id = ? AND state = ?
+	`, SprintStateClosed, nowMs, nowMs, sprintID, projectID, SprintStateActive)
 	if err != nil {
 		return fmt.Errorf("close sprint: %w", err)
 	}
