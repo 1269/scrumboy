@@ -2,6 +2,22 @@
 
 > **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.29.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags), **3.29.0** (MCP JSON-RPC error/`board_get` identity) - see those releases.
 
+## [3.29.8] - 2026-08-08
+
+### Changed
+
+- **Sprint mutations move behind application services** - REST and MCP sprint
+  definition, lifecycle, and deletion operations now use prepared application
+  services with narrow capability boundaries. Existing validation,
+  authorization, response, event, and compatibility contracts are preserved,
+  with comprehensive application, store, REST, and MCP contract coverage.
+
+### Fixed
+
+- **Sprint close mutations are project-scoped** - Closing a sprint now requires
+  both its project and sprint identity, preventing an authorized request for one
+  project from closing a sprint belonging to another project.
+
 ## [3.29.7] - 2026-08-05
 
 ### Changed
