@@ -826,6 +826,56 @@ func TestSprintDefinitionMCPDefinitionFieldsRespectExistingSprintState(t *testin
 	}
 }
 
+func TestSprintDefinitionMCPRejectsDisabledProjectAcrossTransports(t *testing.T) {
+	for _, transport := range []string{"legacy", "jsonrpc"} {
+		t.Run(transport, func(t *testing.T) {
+			fx := newSprintDefinitionMCPFixture(t, "mcp-sprint-definition-disabled-"+transport)
+			sp := createSprintDefinitionMCPSprint(t, fx, "Dormant")
+			if err := fx.st.UpdateProjectSprintsEnabled(fx.ctx, fx.project.ID, fx.ownerID, false); err != nil {
+				t.Fatalf("disable sprints: %v", err)
+			}
+
+			for _, tc := range []struct {
+				name string
+				tool string
+				args map[string]any
+			}{
+				{
+					name: "create", tool: "sprints_create",
+					args: map[string]any{
+						"projectSlug": fx.project.Slug, "name": "Blocked",
+						"plannedStartAt": "2026-08-10T12:00:00Z", "plannedEndAt": "2026-08-17T12:00:00Z",
+					},
+				},
+				{
+					name: "update", tool: "sprints_update",
+					args: map[string]any{"projectSlug": fx.project.Slug, "sprintId": sp.ID, "patch": map[string]any{"name": "Blocked rename"}},
+				},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					fx.wrapped.activate()
+					resp, out := callSprintDefinitionMCP(t, fx, transport, tc.tool, tc.args)
+					publicErr := assertTodoLinkMCPError(
+						t, transport, resp, out, http.StatusBadRequest, "VALIDATION_ERROR", store.ErrSprintsDisabled.Error(),
+					)
+					details, ok := publicErr["details"].(map[string]any)
+					if !ok || details["reason"] != "sprints_disabled" {
+						t.Fatalf("disabled details=%+v", publicErr)
+					}
+				})
+			}
+
+			stored, err := fx.st.GetSprintByID(fx.ctx, sp.ID)
+			if err != nil {
+				t.Fatalf("GetSprintByID: %v", err)
+			}
+			if stored.Name != "Dormant" {
+				t.Fatalf("disabled update persisted: %+v", stored)
+			}
+		})
+	}
+}
+
 func TestSprintDefinitionMCPCreateReturnFailureDoesNotLeakCause(t *testing.T) {
 	for _, transport := range []string{"legacy", "jsonrpc"} {
 		t.Run(transport, func(t *testing.T) {

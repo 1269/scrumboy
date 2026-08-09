@@ -87,7 +87,7 @@ func (s *MCPLifecycleService) PrepareActivate(
 	ctx context.Context,
 	target MCPLifecycleTarget,
 ) (*PreparedMCPActivate, error) {
-	projectID, existing, err := prepareMCPSprintMutationTarget(
+	project, existing, err := prepareMCPSprintMutationTarget(
 		ctx,
 		s.access,
 		s.roles,
@@ -98,6 +98,9 @@ func (s *MCPLifecycleService) PrepareActivate(
 	)
 	if err != nil {
 		return nil, err
+	}
+	if !project.SprintsEnabled {
+		return nil, store.ErrSprintsDisabled
 	}
 	if existing.State != store.SprintStatePlanned {
 		return nil, ErrSprintMustBePlanned
@@ -109,7 +112,7 @@ func (s *MCPLifecycleService) PrepareActivate(
 	return &PreparedMCPActivate{
 		ctx:       ctx,
 		service:   s,
-		projectID: projectID,
+		projectID: project.ID,
 		sprintID:  target.SprintID,
 	}, nil
 }
@@ -120,7 +123,7 @@ func (s *MCPLifecycleService) PrepareClose(
 	ctx context.Context,
 	target MCPLifecycleTarget,
 ) (*PreparedMCPClose, error) {
-	projectID, existing, err := prepareMCPSprintMutationTarget(
+	project, existing, err := prepareMCPSprintMutationTarget(
 		ctx,
 		s.access,
 		s.roles,
@@ -132,6 +135,9 @@ func (s *MCPLifecycleService) PrepareClose(
 	if err != nil {
 		return nil, err
 	}
+	if !project.SprintsEnabled {
+		return nil, store.ErrSprintsDisabled
+	}
 	if existing.State != store.SprintStateActive {
 		return nil, ErrSprintMustBeActive
 	}
@@ -139,7 +145,7 @@ func (s *MCPLifecycleService) PrepareClose(
 	return &PreparedMCPClose{
 		ctx:       ctx,
 		service:   s,
-		projectID: projectID,
+		projectID: project.ID,
 		sprintID:  target.SprintID,
 	}, nil
 }
@@ -172,32 +178,32 @@ func prepareMCPSprintMutationTarget(
 	projectSlug string,
 	mode store.Mode,
 	sprintID int64,
-) (int64, store.Sprint, error) {
+) (store.Project, store.Sprint, error) {
 	projectContext, err := access.GetProjectContextBySlug(ctx, projectSlug, mode)
 	if err != nil {
-		return 0, store.Sprint{}, err
+		return store.Project{}, store.Sprint{}, err
 	}
 
 	actorID, ok := store.UserIDFromContext(ctx)
 	if !ok {
-		return 0, store.Sprint{}, ErrActorRequired
+		return store.Project{}, store.Sprint{}, ErrActorRequired
 	}
 
 	projectID := projectContext.Project.ID
 	role, err := roles.GetProjectRole(ctx, projectID, actorID)
 	if err != nil {
-		return 0, store.Sprint{}, err
+		return store.Project{}, store.Sprint{}, err
 	}
 	if !role.HasMinimumRole(store.RoleMaintainer) {
-		return 0, store.Sprint{}, ErrMaintainerRequired
+		return store.Project{}, store.Sprint{}, ErrMaintainerRequired
 	}
 
 	existing, err := sprints.GetSprintByID(ctx, sprintID)
 	if err != nil {
-		return 0, store.Sprint{}, err
+		return store.Project{}, store.Sprint{}, err
 	}
 	if existing.ProjectID != projectID {
-		return 0, store.Sprint{}, ErrSprintNotInProject
+		return store.Project{}, store.Sprint{}, ErrSprintNotInProject
 	}
-	return projectID, existing, nil
+	return projectContext.Project, existing, nil
 }

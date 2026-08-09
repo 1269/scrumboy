@@ -130,30 +130,40 @@ func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http
 		}
 
 		var in struct {
-			DefaultSprintWeeks *int `json:"defaultSprintWeeks"`
+			DefaultSprintWeeks *int  `json:"defaultSprintWeeks"`
+			SprintsEnabled     *bool `json:"sprintsEnabled"`
 		}
 		if err := readJSON(w, r, s.maxBody, &in); err != nil {
 			return true
 		}
-		if in.DefaultSprintWeeks == nil {
+		if in.DefaultSprintWeeks == nil && in.SprintsEnabled == nil {
 			writeValidationError(w, "defaultSprintWeeks required", "default_sprint_weeks_required", map[string]any{"field": "defaultSprintWeeks"})
 			return true
 		}
-		if *in.DefaultSprintWeeks != 1 && *in.DefaultSprintWeeks != 2 {
+		if in.DefaultSprintWeeks != nil && *in.DefaultSprintWeeks != 1 && *in.DefaultSprintWeeks != 2 {
 			writeValidationError(w, "defaultSprintWeeks must be 1 or 2", "invalid_default_sprint_weeks", map[string]any{"field": "defaultSprintWeeks"})
 			return true
 		}
-		if project.DefaultSprintWeeks == *in.DefaultSprintWeeks {
-			writeJSON(w, http.StatusOK, map[string]any{"defaultSprintWeeks": *in.DefaultSprintWeeks})
-			return true
-		}
 
-		if err := s.store.UpdateProjectDefaultSprintWeeks(ctx, project.ID, userID, *in.DefaultSprintWeeks); err != nil {
-			writeStoreErr(w, err, true)
-			return true
+		resp := map[string]any{}
+		if in.DefaultSprintWeeks != nil {
+			if project.DefaultSprintWeeks != *in.DefaultSprintWeeks {
+				if err := s.store.UpdateProjectDefaultSprintWeeks(ctx, project.ID, userID, *in.DefaultSprintWeeks); err != nil {
+					writeStoreErr(w, err, true)
+					return true
+				}
+			}
+			resp["defaultSprintWeeks"] = *in.DefaultSprintWeeks
+		}
+		if in.SprintsEnabled != nil {
+			if err := s.store.UpdateProjectSprintsEnabled(ctx, project.ID, userID, *in.SprintsEnabled); err != nil {
+				writeStoreErr(w, err, true)
+				return true
+			}
+			resp["sprintsEnabled"] = *in.SprintsEnabled
 		}
 		s.emitRefreshNeeded(s.requestContext(r), project.ID, "project_settings_updated")
-		writeJSON(w, http.StatusOK, map[string]any{"defaultSprintWeeks": *in.DefaultSprintWeeks})
+		writeJSON(w, http.StatusOK, resp)
 		return true
 	}
 
@@ -404,7 +414,7 @@ func (s *Server) handleBoardTodoRoutes(w http.ResponseWriter, r *http.Request, r
 			writeStoreErr(w, err, true)
 			return true
 		}
-		writeJSON(w, http.StatusCreated, todoToJSON(result.Todo))
+		writeJSON(w, http.StatusCreated, todoToJSONForProject(result.Todo, project))
 		return true
 	}
 
@@ -622,7 +632,7 @@ func (s *Server) handleBoardTodoItemRoutes(w http.ResponseWriter, r *http.Reques
 			}
 			return true
 		}
-		writeJSON(w, http.StatusOK, todoToJSON(todo))
+		writeJSON(w, http.StatusOK, todoToJSONForProject(todo, project))
 		return true
 	}
 
@@ -687,7 +697,7 @@ func (s *Server) handleBoardTodoItemRoutes(w http.ResponseWriter, r *http.Reques
 				writeStoreErr(w, err, true)
 				return true
 			}
-			writeJSON(w, http.StatusOK, todoToJSON(result.Todo))
+			writeJSON(w, http.StatusOK, todoToJSONForProject(result.Todo, project))
 			return true
 
 		case http.MethodDelete:
@@ -750,7 +760,7 @@ func (s *Server) handleBoardTodoItemRoutes(w http.ResponseWriter, r *http.Reques
 			writeStoreErr(w, err, true)
 			return true
 		}
-		writeJSON(w, http.StatusOK, todoToJSON(result.Todo))
+		writeJSON(w, http.StatusOK, todoToJSONForProject(result.Todo, project))
 		return true
 	}
 

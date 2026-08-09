@@ -50,9 +50,10 @@ type mcpDefinitionUpdateCall struct {
 type mcpDefinitionFake struct {
 	trace []string
 
-	projectContext store.ProjectContext
-	accessErr      error
-	accessCalls    []mcpDefinitionAccessCall
+	projectContext  store.ProjectContext
+	sprintsDisabled bool
+	accessErr       error
+	accessCalls     []mcpDefinitionAccessCall
 
 	role      store.ProjectRole
 	roleErr   error
@@ -170,6 +171,9 @@ func (f *mcpDefinitionFake) UpdateSprint(
 }
 
 func newMCPDefinitionTestService(fake *mcpDefinitionFake) *MCPDefinitionService {
+	if !fake.sprintsDisabled {
+		fake.projectContext.Project.SprintsEnabled = true
+	}
 	return NewMCPDefinitionService(MCPDefinitionServiceDependencies{
 		Access:      fake,
 		Roles:       fake,
@@ -431,6 +435,44 @@ func TestMCPDefinitionPrepareUpdateTargetGate(t *testing.T) {
 	if strings.Contains(errText, "41") || strings.Contains(errText, "907") || errors.Unwrap(ErrSprintNotInProject) != nil {
 		t.Fatalf("mismatch error leaks identity or wraps a cause: %q", errText)
 	}
+}
+
+func TestMCPDefinitionDisabledCapabilityFollowsAuthorizationAndTargetChecks(t *testing.T) {
+	t.Run("create", func(t *testing.T) {
+		fake := &mcpDefinitionFake{
+			projectContext:  store.ProjectContext{Project: store.Project{ID: 41}},
+			sprintsDisabled: true,
+			role:            store.RoleMaintainer,
+		}
+		prepared, err := newMCPDefinitionTestService(fake).PrepareCreate(
+			mcpDefinitionActorContext(73, "disabled-create"),
+			MCPProjectTarget{ProjectSlug: "project", Mode: store.ModeFull},
+		)
+		if prepared != nil || !errors.Is(err, store.ErrSprintsDisabled) {
+			t.Fatalf("PrepareCreate() = %#v, %v; want nil, ErrSprintsDisabled", prepared, err)
+		}
+		assertMCPDefinitionTrace(t, fake.trace, "access", "role")
+	})
+
+	t.Run("empty update", func(t *testing.T) {
+		fake := &mcpDefinitionFake{
+			projectContext:  store.ProjectContext{Project: store.Project{ID: 41}},
+			sprintsDisabled: true,
+			role:            store.RoleMaintainer,
+			readResults:     []store.Sprint{mcpDefinitionExisting()},
+		}
+		prepared, err := newMCPDefinitionTestService(fake).PrepareUpdate(
+			mcpDefinitionActorContext(73, "disabled-update"),
+			MCPSprintTarget{ProjectSlug: "project", SprintID: 907, Mode: store.ModeFull},
+		)
+		if prepared != nil || !errors.Is(err, store.ErrSprintsDisabled) {
+			t.Fatalf("PrepareUpdate() = %#v, %v; want nil, ErrSprintsDisabled", prepared, err)
+		}
+		assertMCPDefinitionTrace(t, fake.trace, "access", "role", "target")
+		if len(fake.updateCalls) != 0 {
+			t.Fatalf("disabled empty update mutated: %#v", fake.updateCalls)
+		}
+	})
 }
 
 func TestPreparedMCPDefinitionBindsTargetsByValue(t *testing.T) {

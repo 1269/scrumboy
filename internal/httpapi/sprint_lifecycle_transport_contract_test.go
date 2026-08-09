@@ -1057,3 +1057,38 @@ func TestSprintLifecycleRESTMutationErrorMappingContract(t *testing.T) {
 		}
 	}
 }
+
+func TestSprintLifecycleRESTRejectsDisabledProjectWithoutSideEffects(t *testing.T) {
+	for _, operation := range []string{"activate", "close", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			fx := newSprintLifecycleRESTFixture(t, "rest-lifecycle-disabled-"+operation)
+			state := store.SprintStatePlanned
+			if operation == "close" {
+				state = store.SprintStateActive
+			}
+			sp := createSprintLifecycleRESTSprint(t, fx, "Dormant "+operation, state)
+			before := getSprintLifecycleRESTSprint(t, fx, sp.ID)
+			if err := fx.st.UpdateProjectSprintsEnabled(fx.ownerCtx, fx.project.ID, fx.ownerID, false); err != nil {
+				t.Fatalf("disable sprints: %v", err)
+			}
+			fx.wrapped.activateTrace()
+
+			method := http.MethodPost
+			path := fx.actionURL(sp.ID, operation)
+			if operation == "delete" {
+				method = http.MethodDelete
+				path = fx.deleteURL(sp.ID)
+			}
+			var got apiErrorEnvelope
+			resp, _ := doJSON(t, fx.client, method, path, map[string]any{}, &got)
+			assertSprintLifecycleRESTError(
+				t, resp, got, http.StatusBadRequest, "VALIDATION_ERROR",
+				store.ErrSprintsDisabled.Error(), map[string]any{"reason": "sprints_disabled"},
+			)
+			if after := getSprintLifecycleRESTSprint(t, fx, sp.ID); !reflect.DeepEqual(after, before) {
+				t.Fatalf("disabled %s changed sprint: before=%+v after=%+v", operation, before, after)
+			}
+			assertSprintLifecycleRESTSilence(t, fx)
+		})
+	}
+}

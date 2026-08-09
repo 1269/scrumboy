@@ -984,6 +984,41 @@ func TestSprintLifecycleMCPStoreErrorMappingContract(t *testing.T) {
 	}
 }
 
+func TestSprintLifecycleMCPRejectsDisabledProjectAcrossTransports(t *testing.T) {
+	for _, transport := range []string{"legacy", "jsonrpc"} {
+		for _, operation := range []string{"activate", "close", "delete"} {
+			t.Run(transport+"/"+operation, func(t *testing.T) {
+				fx := newSprintLifecycleMCPFixture(t, "mcp-lifecycle-disabled-"+transport+"-"+operation)
+				state := store.SprintStatePlanned
+				if operation == "close" {
+					state = store.SprintStateActive
+				}
+				sp := createSprintLifecycleMCPSprint(t, fx, "Dormant "+operation, state)
+				before := getSprintLifecycleMCPSprint(t, fx, sp.ID)
+				if err := fx.st.UpdateProjectSprintsEnabled(fx.ownerCtx, fx.project.ID, fx.ownerID, false); err != nil {
+					t.Fatalf("disable sprints: %v", err)
+				}
+				stream := subscribeSprintLifecycleMCPEvents(t, fx, fx.client)
+				defer stream.close()
+				fx.wrapped.activateTrace()
+
+				resp, out := callSprintLifecycleMCP(
+					t, fx, fx.client, transport, "sprints_"+operation,
+					map[string]any{"projectSlug": fx.project.Slug, "sprintId": sp.ID},
+				)
+				assertSprintLifecycleMCPError(
+					t, transport, resp, out, http.StatusBadRequest, "VALIDATION_ERROR",
+					store.ErrSprintsDisabled.Error(), map[string]any{"reason": "sprints_disabled"},
+				)
+				if after := getSprintLifecycleMCPSprint(t, fx, sp.ID); !reflect.DeepEqual(after, before) {
+					t.Fatalf("disabled %s changed sprint: before=%+v after=%+v", operation, before, after)
+				}
+				assertSprintLifecycleMCPSilence(t, stream)
+			})
+		}
+	}
+}
+
 func TestSprintLifecycleMCPDeleteFailureContract(t *testing.T) {
 	for _, transport := range []string{"legacy", "jsonrpc"} {
 		for _, targetKind := range []string{"missing", "foreign"} {

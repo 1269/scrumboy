@@ -96,15 +96,18 @@ func (s *MCPDefinitionService) PrepareCreate(
 	ctx context.Context,
 	target MCPProjectTarget,
 ) (*PreparedMCPCreate, error) {
-	projectID, err := s.authorize(ctx, target.ProjectSlug, target.Mode)
+	project, err := s.authorize(ctx, target.ProjectSlug, target.Mode)
 	if err != nil {
 		return nil, err
+	}
+	if !project.SprintsEnabled {
+		return nil, store.ErrSprintsDisabled
 	}
 
 	return &PreparedMCPCreate{
 		ctx:       ctx,
 		service:   s,
-		projectID: projectID,
+		projectID: project.ID,
 	}, nil
 }
 
@@ -114,7 +117,7 @@ func (s *MCPDefinitionService) PrepareUpdate(
 	ctx context.Context,
 	target MCPSprintTarget,
 ) (*PreparedMCPUpdate, error) {
-	projectID, err := s.authorize(ctx, target.ProjectSlug, target.Mode)
+	project, err := s.authorize(ctx, target.ProjectSlug, target.Mode)
 	if err != nil {
 		return nil, err
 	}
@@ -123,8 +126,11 @@ func (s *MCPDefinitionService) PrepareUpdate(
 	if err != nil {
 		return nil, err
 	}
-	if existing.ProjectID != projectID {
+	if existing.ProjectID != project.ID {
 		return nil, ErrSprintNotInProject
+	}
+	if !project.SprintsEnabled {
+		return nil, store.ErrSprintsDisabled
 	}
 
 	return &PreparedMCPUpdate{
@@ -139,26 +145,26 @@ func (s *MCPDefinitionService) authorize(
 	ctx context.Context,
 	projectSlug string,
 	mode store.Mode,
-) (int64, error) {
+) (store.Project, error) {
 	projectContext, err := s.access.GetProjectContextBySlug(ctx, projectSlug, mode)
 	if err != nil {
-		return 0, err
+		return store.Project{}, err
 	}
 
 	userID, ok := store.UserIDFromContext(ctx)
 	if !ok {
-		return 0, ErrActorRequired
+		return store.Project{}, ErrActorRequired
 	}
 
 	role, err := s.roles.GetProjectRole(ctx, projectContext.Project.ID, userID)
 	if err != nil {
-		return 0, err
+		return store.Project{}, err
 	}
 	if !role.HasMinimumRole(store.RoleMaintainer) {
-		return 0, ErrMaintainerRequired
+		return store.Project{}, ErrMaintainerRequired
 	}
 
-	return projectContext.Project.ID, nil
+	return projectContext.Project, nil
 }
 
 // Create persists one adapter-prepared definition and returns the exact store

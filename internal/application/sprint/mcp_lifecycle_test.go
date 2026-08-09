@@ -210,7 +210,7 @@ func newMCPLifecycleFake(state string) *mcpLifecycleFake {
 	now := time.Date(2026, time.August, 8, 15, 0, 0, 0, time.UTC)
 	return &mcpLifecycleFake{
 		projectContext: store.ProjectContext{
-			Project: store.Project{ID: 71, Slug: "resolved-slug"},
+			Project: store.Project{ID: 71, Slug: "resolved-slug", SprintsEnabled: true},
 			Role:    store.RoleViewer,
 		},
 		role: store.RoleMaintainer,
@@ -477,6 +477,34 @@ func TestMCPLifecyclePreparationTargetFailures(t *testing.T) {
 			assertMCPLifecycleTrace(t, fake.trace, "access", "role", "target")
 		})
 	}
+}
+
+func TestMCPLifecycleDisabledCapabilityFollowsTargetCheckAndPrecedesStatePolicy(t *testing.T) {
+	t.Run("activate", func(t *testing.T) {
+		fake := newMCPLifecycleFake(store.SprintStateClosed)
+		fake.projectContext.Project.SprintsEnabled = false
+		prepared, err := newMCPLifecycleTestService(fake).PrepareActivate(
+			mcpLifecycleContext(73, "disabled-activate"),
+			MCPLifecycleTarget{ProjectSlug: "project", SprintID: 907, Mode: store.ModeFull},
+		)
+		if prepared != nil || !errors.Is(err, store.ErrSprintsDisabled) {
+			t.Fatalf("PrepareActivate() = %#v, %v; want nil, ErrSprintsDisabled", prepared, err)
+		}
+		assertMCPLifecycleTrace(t, fake.trace, "access", "role", "target")
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		fake := newMCPLifecycleFake(store.SprintStateClosed)
+		fake.projectContext.Project.SprintsEnabled = false
+		prepared, err := newMCPDeletionTestService(fake).PrepareDelete(
+			mcpLifecycleContext(73, "disabled-delete"),
+			MCPDeletionTarget{ProjectSlug: "project", SprintID: 907, Mode: store.ModeFull},
+		)
+		if prepared != nil || !errors.Is(err, store.ErrSprintsDisabled) {
+			t.Fatalf("PrepareDelete() = %#v, %v; want nil, ErrSprintsDisabled", prepared, err)
+		}
+		assertMCPLifecycleTrace(t, fake.trace, "access", "role", "target")
+	})
 }
 
 func TestMCPLifecyclePrepareActivatePolicyAndClock(t *testing.T) {

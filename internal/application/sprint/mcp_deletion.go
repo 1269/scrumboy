@@ -56,7 +56,7 @@ func (s *MCPDeletionService) PrepareDelete(
 	ctx context.Context,
 	target MCPDeletionTarget,
 ) (*PreparedMCPDelete, error) {
-	projectID, _, err := prepareMCPSprintMutationTarget(
+	project, _, err := prepareMCPSprintMutationTarget(
 		ctx,
 		s.access,
 		s.roles,
@@ -68,11 +68,14 @@ func (s *MCPDeletionService) PrepareDelete(
 	if err != nil {
 		return nil, err
 	}
+	if !project.SprintsEnabled {
+		return nil, store.ErrSprintsDisabled
+	}
 
 	return &PreparedMCPDelete{
 		ctx:       ctx,
 		service:   s,
-		projectID: projectID,
+		projectID: project.ID,
 		sprintID:  target.SprintID,
 	}, nil
 }

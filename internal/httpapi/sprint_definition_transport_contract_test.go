@@ -735,3 +735,49 @@ func TestSprintDefinitionRESTDefinitionFieldsRespectExistingSprintState(t *testi
 		})
 	}
 }
+
+func TestSprintDefinitionRESTRejectsDisabledProjectWithoutSideEffects(t *testing.T) {
+	fx := newSprintDefinitionRESTFixture(t, "rest-sprint-definition-disabled")
+	sp := createSprintDefinitionRESTSprint(t, fx, "Dormant")
+	if err := fx.st.UpdateProjectSprintsEnabled(fx.ctx, fx.project.ID, fx.ownerID, false); err != nil {
+		t.Fatalf("disable sprints: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		url    string
+		body   map[string]any
+	}{
+		{
+			name: "create", method: http.MethodPost, url: fx.createURL(),
+			body: map[string]any{"name": "Blocked", "plannedStartAt": time.Now().UnixMilli(), "plannedEndAt": time.Now().Add(time.Hour).UnixMilli()},
+		},
+		{
+			name: "update", method: http.MethodPatch, url: fx.updateURL(sp.ID),
+			body: map[string]any{"name": "Blocked rename"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx.wrapped.activate()
+			beforeEvents := len(fx.collector.snapshot())
+			var got apiErrorEnvelope
+			resp, _ := doJSON(t, fx.client, tc.method, tc.url, tc.body, &got)
+			if resp.StatusCode != http.StatusBadRequest || got.Error.Code != "VALIDATION_ERROR" ||
+				got.Error.Message != store.ErrSprintsDisabled.Error() || got.Error.Details["reason"] != "sprints_disabled" {
+				t.Fatalf("disabled %s status=%d envelope=%+v", tc.name, resp.StatusCode, got)
+			}
+			if len(fx.collector.snapshot()) != beforeEvents {
+				t.Fatalf("disabled %s published events", tc.name)
+			}
+		})
+	}
+
+	stored, err := fx.st.GetSprintByID(fx.ctx, sp.ID)
+	if err != nil {
+		t.Fatalf("GetSprintByID: %v", err)
+	}
+	if stored.Name != "Dormant" {
+		t.Fatalf("disabled update persisted: %+v", stored)
+	}
+}
