@@ -8,13 +8,13 @@ import (
 )
 
 var (
-	// ErrSprintNotInProject reports that an MCP update target was read
-	// successfully but belongs to a different slug-resolved project.
+	// ErrSprintNotInProject reports that a sprint-mutation target was read
+	// successfully but belongs to a different resolved project.
 	ErrSprintNotInProject = errors.New("sprint definition target not in project")
 )
 
-// MCPAccessStore resolves the project-slug access boundary used by canonical
-// MCP sprint-definition mutations.
+// MCPAccessStore resolves the project-slug access boundary shared by canonical
+// MCP sprint-definition, lifecycle, and deletion mutations.
 type MCPAccessStore interface {
 	GetProjectContextBySlug(
 		ctx context.Context,
@@ -23,8 +23,8 @@ type MCPAccessStore interface {
 	) (store.ProjectContext, error)
 }
 
-// SprintReadStore provides the target and post-mutation sprint reads used by
-// canonical MCP sprint-definition mutations.
+// SprintReadStore provides target and post-mutation sprint reads shared by
+// prepared sprint definition, lifecycle, and deletion operations.
 type SprintReadStore interface {
 	GetSprintByID(ctx context.Context, sprintID int64) (store.Sprint, error)
 }

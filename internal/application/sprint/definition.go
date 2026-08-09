@@ -73,9 +73,10 @@ type DefinitionStore interface {
 	) error
 }
 
-// RoleStore is kept separate from definition persistence because both future
-// prepared services perform a fresh role lookup but retain distinct error
-// policies. The port returns the store result unchanged.
+// RoleStore is kept separate from definition, lifecycle, and deletion
+// persistence because their prepared REST and MCP services perform a fresh role
+// lookup while retaining transport-specific error policies. The port returns
+// the store result unchanged.
 type RoleStore interface {
 	GetProjectRole(
 		ctx context.Context,

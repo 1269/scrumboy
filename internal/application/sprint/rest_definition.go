@@ -9,11 +9,12 @@ import (
 
 var (
 	// ErrActorRequired reports that the exact context supplied to sprint
-	// definition preparation does not contain an authenticated requester.
+	// mutation preparation does not contain an authenticated requester.
 	ErrActorRequired = errors.New("sprint definition actor required")
 	// ErrMaintainerRequired reports that the authenticated requester lacks the
-	// required role. REST preparation also deliberately uses this result to
-	// collapse role lookup failures; MCP preparation returns those failures raw.
+	// required role. REST mutation preparation deliberately also uses this
+	// result to collapse role lookup failures; MCP preparation returns those
+	// failures raw.
 	ErrMaintainerRequired = errors.New("sprint definition maintainer required")
 )
 
