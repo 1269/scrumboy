@@ -2,6 +2,18 @@
 
 > **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.29.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags), **3.29.0** (MCP JSON-RPC error/`board_get` identity) - see those releases.
 
+## [3.29.9] - 2026-08-08
+
+### Security
+
+- **npm advisories for DOMPurify, Mermaid, and transitive NanoID** - Pin
+  `dompurify` to `3.4.13`, `mermaid` to `11.16.1`, and `nanoid` to `3.3.17`
+  beneath PostCSS via npm overrides so the frontend resolves patched releases
+  for GHSA-55q2-fjhq-7xh7, GHSA-2v8p-3f2j-5mp7, GHSA-3rrr-jr9j-h3q3,
+  GHSA-6x64-9x62-f2gx, GHSA-c4c3-pg64-4m4v, GHSA-rhh3-jpg6-66xh, and
+  GHSA-2v37-7h3g-55p8. Vendored browser bundles and documentation pins updated;
+  no application behavior change.
+
 ## [3.29.8] - 2026-08-08
 
 ### Changed
