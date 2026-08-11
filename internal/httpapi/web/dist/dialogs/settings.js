@@ -101,7 +101,7 @@ async function switchSettingsTab(tabName) {
         clearWorkflowDraftState();
     }
     if (getSettingsActiveTab() === "priorities" && isPriorityDraftDirty()) {
-        const discard = await showConfirmDialog(t('settings.workflow.unsavedConfirm.message'), t('settings.workflow.unsavedConfirm.title'), t('settings.workflow.unsavedConfirm.confirm'));
+        const discard = await showConfirmDialog(t('settings.priorities.unsavedConfirm.message'), t('settings.priorities.unsavedConfirm.title'), t('settings.priorities.unsavedConfirm.confirm'));
         if (!discard)
             return;
         resetPriorityDraftToBaseline();
