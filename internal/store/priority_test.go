@@ -3,10 +3,11 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
-func TestGetProjectPriorities_SeedsDefaults(t *testing.T) {
+func TestCreateProject_SeedsDefaultPriorities(t *testing.T) {
 	st, cleanup := newTestStore(t)
 	defer cleanup()
 
@@ -31,6 +32,87 @@ func TestGetProjectPriorities_SeedsDefaults(t *testing.T) {
 		if tier.Position != i {
 			t.Fatalf("tier %q: want position %d, got %d", tier.Key, i, tier.Position)
 		}
+	}
+}
+
+func TestCreateAnonymousBoardPrioritySeedFailureRollsBackProjectAndAudit(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := st.db.ExecContext(ctx, `CREATE TRIGGER reject_priority_seed BEFORE INSERT ON project_priorities BEGIN SELECT RAISE(ABORT, 'reject priority seed'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	var projectsBefore, auditsBefore int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects`).Scan(&projectsBefore); err != nil {
+		t.Fatalf("count projects: %v", err)
+	}
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events`).Scan(&auditsBefore); err != nil {
+		t.Fatalf("count audits: %v", err)
+	}
+	if _, err := st.CreateAnonymousBoard(ctx); err == nil {
+		t.Fatal("CreateAnonymousBoard should fail when priority seeding fails")
+	}
+	var projectsAfter, auditsAfter int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects`).Scan(&projectsAfter); err != nil {
+		t.Fatalf("count projects after: %v", err)
+	}
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events`).Scan(&auditsAfter); err != nil {
+		t.Fatalf("count audits after: %v", err)
+	}
+	if projectsAfter != projectsBefore || auditsAfter != auditsBefore {
+		t.Fatalf("rollback projects %d->%d audits %d->%d", projectsBefore, projectsAfter, auditsBefore, auditsAfter)
+	}
+}
+
+func TestPriorityTierValidationLimits(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	project, err := st.CreateProject(ctx, "priority-limits")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	name200 := strings.Repeat("a", 200)
+	if _, err := st.AddPriorityTier(ctx, project.ID, name200); err != nil {
+		t.Fatalf("200-character name: %v", err)
+	}
+	if _, err := st.AddPriorityTier(ctx, project.ID, strings.Repeat("b", 201)); !errors.Is(err, ErrValidation) || ErrorReason(err) != ReasonInvalidPriorityTierName {
+		t.Fatalf("201-character name error=%v reason=%q", err, ErrorReason(err))
+	}
+	for i := 5; i < maxPriorityTiers; i++ {
+		if _, err := st.AddPriorityTier(ctx, project.ID, "limit-tier-"+string(rune('a'+i))); err != nil {
+			t.Fatalf("fill tier %d: %v", i, err)
+		}
+	}
+	if _, err := st.AddPriorityTier(ctx, project.ID, "one too many"); !errors.Is(err, ErrValidation) || ErrorReason(err) != ReasonPriorityTierLimitReached {
+		t.Fatalf("thirteenth tier error=%v reason=%q", err, ErrorReason(err))
+	}
+}
+
+func TestGetProjectPriorities_IsReadOnlyWhenDefinitionsAreMissing(t *testing.T) {
+	st, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	project, err := st.CreateProject(ctx, "priority-read-only")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `DELETE FROM project_priorities WHERE project_id = ?`, project.ID); err != nil {
+		t.Fatalf("delete fixture priorities: %v", err)
+	}
+	tiers, err := st.GetProjectPriorities(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("GetProjectPriorities: %v", err)
+	}
+	if len(tiers) != 0 {
+		t.Fatalf("tiers=%v want empty read", tiers)
+	}
+	var count int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_priorities WHERE project_id = ?`, project.ID).Scan(&count); err != nil {
+		t.Fatalf("count priorities: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("read inserted %d tiers", count)
 	}
 }
 
@@ -133,7 +215,7 @@ func TestUpdatePriorityTier_NotFound(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	if err := st.UpdatePriorityTier(ctx, project.ID, "does-not-exist", "Name", "#112233"); !errors.Is(err, ErrNotFound) {
+	if err := st.UpdatePriorityTier(ctx, project.ID, "does_not_exist", "Name", "#112233"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -219,7 +301,7 @@ func TestDeletePriorityTier_NotFound(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	if err := st.DeletePriorityTier(ctx, project.ID, "does-not-exist"); !errors.Is(err, ErrNotFound) {
+	if err := st.DeletePriorityTier(ctx, project.ID, "does_not_exist"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -268,8 +350,9 @@ func TestUpdateTodoByLocalID_ChangesPriorityKey(t *testing.T) {
 
 	high := "high"
 	updated, err := st.UpdateTodoByLocalID(ctx, project.ID, todo.LocalID, UpdateTodoInput{
-		Title:       todo.Title,
-		PriorityKey: &high,
+		Title:              todo.Title,
+		PriorityKey:        &high,
+		PriorityKeyPresent: true,
 	}, ModeFull)
 	if err != nil {
 		t.Fatalf("UpdateTodoByLocalID: %v", err)
@@ -278,9 +361,19 @@ func TestUpdateTodoByLocalID_ChangesPriorityKey(t *testing.T) {
 		t.Fatalf("expected priority key %q, got %v", "high", updated.PriorityKey)
 	}
 
-	// Clearing priority (nil) should persist as unset.
+	// Omission preserves the existing assignment.
+	preserved, err := st.UpdateTodoByLocalID(ctx, project.ID, todo.LocalID, UpdateTodoInput{Title: todo.Title}, ModeFull)
+	if err != nil {
+		t.Fatalf("UpdateTodoByLocalID (preserve): %v", err)
+	}
+	if preserved.PriorityKey == nil || *preserved.PriorityKey != "high" {
+		t.Fatalf("expected omitted priority to preserve high, got %v", preserved.PriorityKey)
+	}
+
+	// Explicitly present nil clears the priority.
 	cleared, err := st.UpdateTodoByLocalID(ctx, project.ID, todo.LocalID, UpdateTodoInput{
-		Title: todo.Title,
+		Title:              todo.Title,
+		PriorityKeyPresent: true,
 	}, ModeFull)
 	if err != nil {
 		t.Fatalf("UpdateTodoByLocalID (clear): %v", err)
@@ -315,8 +408,9 @@ func TestUpdateTodo_ValidatesPriorityKey(t *testing.T) {
 
 	bogus := "not-a-real-tier"
 	if _, err := st.UpdateTodoByLocalID(ctx, project.ID, todo.LocalID, UpdateTodoInput{
-		Title:       todo.Title,
-		PriorityKey: &bogus,
+		Title:              todo.Title,
+		PriorityKey:        &bogus,
+		PriorityKeyPresent: true,
 	}, ModeFull); !errors.Is(err, ErrValidation) {
 		t.Fatalf("expected ErrValidation for unknown priority key, got %v", err)
 	}

@@ -131,9 +131,14 @@ func TestPriorityMutationRESTFailureSilence(t *testing.T) {
 		fx := newPriorityRESTFixture(t, "priority-rest-validation-silence")
 		stream := subscribeTodoUpdateEvents(t, fx.client, fx.ts.URL+"/api/board/"+fx.project.Slug+"/events")
 
-		resp, body := doJSON(t, fx.client, http.MethodPost, fx.ts.URL+"/api/board/"+fx.project.Slug+"/priorities", map[string]any{"name": "   "}, nil)
+		var out map[string]any
+		resp, body := doJSON(t, fx.client, http.MethodPost, fx.ts.URL+"/api/board/"+fx.project.Slug+"/priorities", map[string]any{"name": "   "}, &out)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("validation status=%d body=%s", resp.StatusCode, body)
+		}
+		errBody := out["error"].(map[string]any)
+		if errBody["code"] != "VALIDATION_ERROR" || errBody["details"].(map[string]any)["reason"] != "invalid_priority_tier_name" {
+			t.Fatalf("validation response=%+v", out)
 		}
 		if events := collectTodoUpdateEvents(t, stream); len(events) != 0 {
 			t.Fatalf("validation emitted priority events: %+v", events)
@@ -173,9 +178,14 @@ func TestPriorityMutationRESTFailureSilence(t *testing.T) {
 		}
 		stream := subscribeTodoUpdateEvents(t, fx.client, fx.ts.URL+"/api/board/"+fx.project.Slug+"/events")
 
-		resp, body := doJSON(t, fx.client, http.MethodDelete, fx.ts.URL+"/api/board/"+fx.project.Slug+"/priorities/low", nil, nil)
+		var out map[string]any
+		resp, body := doJSON(t, fx.client, http.MethodDelete, fx.ts.URL+"/api/board/"+fx.project.Slug+"/priorities/low", nil, &out)
 		if resp.StatusCode != http.StatusConflict {
 			t.Fatalf("store rejection status=%d body=%s", resp.StatusCode, body)
+		}
+		errBody := out["error"].(map[string]any)
+		if errBody["code"] != "CONFLICT" || errBody["details"].(map[string]any)["reason"] != "priority_tier_in_use" {
+			t.Fatalf("conflict response=%+v", out)
 		}
 		if events := collectTodoUpdateEvents(t, stream); len(events) != 0 {
 			t.Fatalf("store rejection emitted priority events: %+v", events)

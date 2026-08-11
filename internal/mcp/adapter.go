@@ -9,11 +9,11 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	boardapp "scrumboy/internal/application/board"
 	membershipapp "scrumboy/internal/application/membership"
 	priorityapp "scrumboy/internal/application/priority"
+	sprintapp "scrumboy/internal/application/sprint"
 	todoapp "scrumboy/internal/application/todo"
 	todolinkapp "scrumboy/internal/application/todolink"
 	workflowapp "scrumboy/internal/application/workflow"
@@ -39,14 +39,12 @@ type storeAPI interface {
 	todoapp.MCPMoveLaneStore
 	ListSprintsWithTodoCount(ctx context.Context, projectID int64) ([]store.SprintWithTodoCount, error)
 	CountUnscheduledTodos(ctx context.Context, projectID int64) (int64, error)
+	sprintapp.DefinitionStore
+	sprintapp.TransitionStore
+	sprintapp.DeletionStore
 	GetSprintByID(ctx context.Context, sprintID int64) (store.Sprint, error)
 	GetActiveSprintByProjectID(ctx context.Context, projectID int64) (*store.Sprint, error)
-	CreateSprint(ctx context.Context, projectID int64, name string, plannedStartAt, plannedEndAt time.Time) (store.Sprint, error)
 	GetProjectRole(ctx context.Context, projectID int64, userID int64) (store.ProjectRole, error)
-	ActivateSprint(ctx context.Context, projectID, sprintID int64) error
-	CloseSprint(ctx context.Context, sprintID int64) error
-	UpdateSprint(ctx context.Context, sprintID int64, in store.UpdateSprintInput) error
-	DeleteSprint(ctx context.Context, projectID, sprintID int64) error
 	ListTagCounts(ctx context.Context, pc *store.ProjectContext) ([]store.TagCount, error)
 	ListUserTags(ctx context.Context, userID int64) ([]store.TagWithColor, error)
 	UpdateTagColor(ctx context.Context, viewerUserID *int64, tagID int64, color *string) error
@@ -60,8 +58,8 @@ type storeAPI interface {
 	membershipapp.MutationStore
 	GetProjectWorkflow(ctx context.Context, projectID int64) ([]store.WorkflowColumn, error)
 	workflowapp.MutationStore
-	GetProjectPriorities(ctx context.Context, projectID int64) ([]store.PriorityTier, error)
 	priorityapp.MutationStore
+	GetProjectPriorities(ctx context.Context, projectID int64) ([]store.PriorityTier, error)
 	CountTodosForBoardLane(ctx context.Context, projectID int64, columnKey string, tagFilter string, searchFilter string, assigneeFilter store.AssigneeFilter, sprintFilter store.SprintFilter) (int, error)
 	UpdateBoardActivity(ctx context.Context, projectID int64) error
 	CreateProject(ctx context.Context, name string) (store.Project, error)
@@ -98,6 +96,9 @@ type Adapter struct {
 	workflowMutations   *workflowapp.MCPMutationService
 	priorityMutations   *priorityapp.MCPMutationService
 	membershipMutations *membershipapp.MCPMutationService
+	sprintDefinitions   *sprintapp.MCPDefinitionService
+	sprintLifecycle     *sprintapp.MCPLifecycleService
+	sprintDeletions     *sprintapp.MCPDeletionService
 	mode                string
 	tools               toolRegistry
 	publicOrigin        *publicorigin.Resolver
@@ -158,14 +159,30 @@ func New(st storeAPI, opts Options) *Adapter {
 			Workflow:  st,
 		}),
 		priorityMutations: priorityapp.NewMCPMutationService(priorityapp.MCPMutationServiceDependencies{
-			Access:    st,
-			Mutations: st,
-			Priority:  st,
+			Access: st, Mutations: st, Priority: st,
 		}),
 		membershipMutations: membershipapp.NewMCPMutationService(membershipapp.MCPMutationServiceDependencies{
 			Access:    st,
 			Mutations: st,
 			Members:   st,
+		}),
+		sprintDefinitions: sprintapp.NewMCPDefinitionService(sprintapp.MCPDefinitionServiceDependencies{
+			Access:      st,
+			Roles:       st,
+			Definitions: st,
+			Sprints:     st,
+		}),
+		sprintLifecycle: sprintapp.NewMCPLifecycleService(sprintapp.MCPLifecycleServiceDependencies{
+			Access:      st,
+			Roles:       st,
+			Sprints:     st,
+			Transitions: st,
+		}),
+		sprintDeletions: sprintapp.NewMCPDeletionService(sprintapp.MCPDeletionServiceDependencies{
+			Access:    st,
+			Roles:     st,
+			Sprints:   st,
+			Deletions: st,
 		}),
 		mode:         mode,
 		tools:        make(toolRegistry),

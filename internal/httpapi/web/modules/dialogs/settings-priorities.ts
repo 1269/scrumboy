@@ -294,7 +294,26 @@ async function savePriorityDraftChanges(rerender: RerenderFn): Promise<void> {
     await rerender();
     showToast(t('settings.priorities.toast.updated'));
   } catch (err: any) {
-    showToast(apiErrorMessageOrRaw(err, { fallbackKey: 'settings.priorities.toast.updateFailed' }));
+    const originalMessage = apiErrorMessageOrRaw(err, { fallbackKey: 'settings.priorities.toast.updateFailed' });
+    invalidatePriorityTierCountsCache();
+    try {
+      await invalidateBoard(
+        slug,
+        getTag(),
+        getSearch(),
+        getSprintIdFromUrl(),
+        getAssigneeFromUrl(),
+        getSortFromUrl(),
+        true
+      );
+      syncPriorityDraftFromBoardAfterMutation();
+      await rerender();
+      showToast(originalMessage);
+    } catch {
+      clearPriorityDraftState();
+      showToast(originalMessage);
+      showToast(t('settings.priorities.toast.reloadRequired'));
+    }
   }
 }
 

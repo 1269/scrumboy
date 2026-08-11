@@ -397,7 +397,7 @@ func TestPreparedLegacyRead_DelegatesExactlyAndNamesResult(t *testing.T) {
 
 	ctx := context.WithValue(context.Background(), readServiceContextKey{}, "legacy")
 	pc := &store.ProjectContext{
-		Project: store.Project{ID: 7, Slug: "project-slug"},
+		Project: store.Project{ID: 7, Slug: "project-slug", SprintsEnabled: true},
 		Role:    store.RoleViewer,
 	}
 	query := LegacyQuery{
@@ -418,6 +418,9 @@ func TestPreparedLegacyRead_DelegatesExactlyAndNamesResult(t *testing.T) {
 			store.DefaultColumnBacklog: {{ID: 101, Title: "Todo"}},
 		},
 	}
+	priorityStore := &recordingPriorityReadStore{
+		tiers: []store.PriorityTier{{Key: "high", Name: "High", Color: "#ff8800", Position: 0}},
+	}
 	slugAccessStore := &recordingSlugReadAccessStore{}
 	slugSprintStore := &recordingSlugReadSprintStore{}
 
@@ -426,6 +429,7 @@ func TestPreparedLegacyRead_DelegatesExactlyAndNamesResult(t *testing.T) {
 		Lane:         laneStore,
 		LegacyAccess: legacyAccessStore,
 		Legacy:       legacyStore,
+		Priorities:   priorityStore,
 		SlugAccess:   slugAccessStore,
 		SlugSprints:  slugSprintStore,
 	}).PrepareLegacy(ctx, LegacyReadTarget{
@@ -445,6 +449,9 @@ func TestPreparedLegacyRead_DelegatesExactlyAndNamesResult(t *testing.T) {
 	}
 	if legacyStore.calls != 1 {
 		t.Fatalf("GetBoard calls = %d, want 1", legacyStore.calls)
+	}
+	if priorityStore.calls != 1 || priorityStore.ctx != ctx || priorityStore.projectID != pc.Project.ID {
+		t.Fatalf("priority read calls=%d contextMatch=%v projectID=%d", priorityStore.calls, priorityStore.ctx == ctx, priorityStore.projectID)
 	}
 	if initialStore.calls != 0 ||
 		laneStore.calls != 0 ||
@@ -487,13 +494,43 @@ func TestPreparedLegacyRead_DelegatesExactlyAndNamesResult(t *testing.T) {
 	}
 
 	want := LegacyResult{
-		Project:  legacyStore.project,
-		Tags:     legacyStore.tags,
-		Workflow: legacyStore.workflow,
-		Columns:  legacyStore.columns,
+		Project:    legacyStore.project,
+		Tags:       legacyStore.tags,
+		Workflow:   legacyStore.workflow,
+		Columns:    legacyStore.columns,
+		Priorities: priorityStore.tiers,
 	}
 	if !reflect.DeepEqual(result, want) {
 		t.Fatalf("result = %#v, want %#v", result, want)
+	}
+}
+
+func TestPreparedLegacyRead_RejectsSprintFilterWhenDisabledAfterAccess(t *testing.T) {
+	access := &recordingLegacyReadAccessStore{
+		projectContext: store.ProjectContext{
+			Project: store.Project{ID: 73, SprintsEnabled: false},
+			Role:    store.RoleViewer,
+		},
+	}
+	legacy := &recordingLegacyReadStore{}
+	prepared, err := NewReadService(ReadServiceDependencies{
+		Initial:      &recordingReadStore{},
+		Lane:         &recordingLaneReadStore{},
+		LegacyAccess: access,
+		Legacy:       legacy,
+		SlugAccess:   &recordingSlugReadAccessStore{},
+		SlugSprints:  &recordingSlugReadSprintStore{},
+	}).PrepareLegacy(context.Background(), LegacyReadTarget{ProjectID: 73, Mode: store.ModeFull})
+	if err != nil {
+		t.Fatalf("PrepareLegacy: %v", err)
+	}
+
+	_, err = prepared.Read(LegacyQuery{SprintFilter: store.SprintFilter{Mode: "sprint_number", SprintNumber: 4}})
+	if !errors.Is(err, store.ErrSprintsDisabled) {
+		t.Fatalf("Read error = %v, want ErrSprintsDisabled", err)
+	}
+	if access.calls != 1 || legacy.calls != 0 {
+		t.Fatalf("calls access=%d legacy=%d, want 1/0", access.calls, legacy.calls)
 	}
 }
 

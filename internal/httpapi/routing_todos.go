@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -64,12 +65,13 @@ func (s *Server) handleTodosPatchOrDelete(w http.ResponseWriter, r *http.Request
 			return true
 		}
 		todo, err := s.store.UpdateTodo(s.requestContext(r), todoID, store.UpdateTodoInput{
-			Title:            in.Title,
-			Body:             in.Body,
-			Tags:             in.Tags,
-			EstimationPoints: in.EstimationPoints,
-			AssigneeUserID:   in.AssigneeUserID,
-			PriorityKey:      in.PriorityKey,
+			Title:              in.Title,
+			Body:               in.Body,
+			Tags:               in.Tags,
+			EstimationPoints:   in.EstimationPoints,
+			AssigneeUserID:     in.AssigneeUserID,
+			PriorityKey:        in.PriorityKey,
+			PriorityKeyPresent: raw["priorityKey"] != nil,
 		}, s.storeMode())
 		if err != nil {
 			writeStoreErr(w, err, true)
@@ -78,7 +80,7 @@ func (s *Server) handleTodosPatchOrDelete(w http.ResponseWriter, r *http.Request
 		if !todo.AssignmentChanged {
 			s.emitRefreshNeeded(s.requestContext(r), todo.ProjectID, "todo_updated")
 		}
-		writeJSON(w, http.StatusOK, todoToJSON(todo))
+		writeJSON(w, http.StatusOK, s.legacyTodoMutationJSON(s.requestContext(r), todo))
 		return true
 
 	case http.MethodDelete:
@@ -130,6 +132,19 @@ func (s *Server) handleTodosMove(w http.ResponseWriter, r *http.Request, rest []
 		return true
 	}
 	s.emitRefreshNeeded(s.requestContext(r), todo.ProjectID, "todo_moved")
-	writeJSON(w, http.StatusOK, todoToJSON(todo))
+	writeJSON(w, http.StatusOK, s.legacyTodoMutationJSON(s.requestContext(r), todo))
 	return true
+}
+
+// legacyTodoMutationJSON keeps response-only capability projection from
+// changing the outcome of an already-committed numeric compatibility
+// mutation. If capability cannot be read, suppress the sprint assignment so
+// the response fails closed without reporting a transport failure.
+func (s *Server) legacyTodoMutationJSON(ctx context.Context, todo store.Todo) todoJSON {
+	project, err := s.store.GetProject(ctx, todo.ProjectID)
+	if err != nil {
+		todo.SprintID = nil
+		return todoToJSON(todo)
+	}
+	return todoToJSONForProject(todo, project)
 }

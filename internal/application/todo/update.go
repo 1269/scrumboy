@@ -112,14 +112,15 @@ func MaterializeUpdateInput(existing store.Todo, patch UpdatePatch) store.Update
 	}
 
 	return store.UpdateTodoInput{
-		Title:            title,
-		Body:             body,
-		Tags:             tags,
-		EstimationPoints: estimationPoints,
-		AssigneeUserID:   assigneeUserID,
-		SprintID:         sprintID,
-		ClearSprint:      clearSprint,
-		PriorityKey:      priorityKey,
+		Title:              title,
+		Body:               body,
+		Tags:               tags,
+		EstimationPoints:   estimationPoints,
+		AssigneeUserID:     assigneeUserID,
+		SprintID:           sprintID,
+		ClearSprint:        clearSprint,
+		PriorityKey:        priorityKey,
+		PriorityKeyPresent: patch.PriorityKey.Present,
 	}
 }
 

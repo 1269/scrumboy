@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -12,6 +13,66 @@ const (
 	defaultPriorityColor = "#64748b"
 	maxPriorityNameLen   = 200
 )
+
+const (
+	ReasonInvalidPriorityKey          = "invalid_priority_key"
+	ReasonInvalidPriorityTierName     = "invalid_priority_tier_name"
+	ReasonInvalidPriorityTierColor    = "invalid_priority_tier_color"
+	ReasonPriorityTierLimitReached    = "priority_tier_limit_reached"
+	ReasonPriorityTierMinimumRequired = "priority_tier_minimum_required"
+	ReasonPriorityTierInUse           = "priority_tier_in_use"
+)
+
+type reasonedStoreError struct {
+	base   error
+	reason string
+	msg    string
+}
+
+func (e *reasonedStoreError) Error() string  { return e.msg }
+func (e *reasonedStoreError) Unwrap() error  { return e.base }
+func (e *reasonedStoreError) Reason() string { return e.reason }
+
+func priorityError(base error, reason, message string) error {
+	return &reasonedStoreError{base: base, reason: reason, msg: message}
+}
+
+// ErrorReason returns a stable public classification only for explicitly
+// reason-bearing domain errors. Dynamic import diagnostics intentionally do
+// not use this mechanism.
+func ErrorReason(err error) string {
+	var reasoned interface{ Reason() string }
+	if errors.As(err, &reasoned) {
+		return reasoned.Reason()
+	}
+	return ""
+}
+
+// priorityTierDefinitionReason is shared by CRUD and import so both paths
+// enforce the same persistent-state constraints. Import callers deliberately
+// turn the classification into contextual raw diagnostics rather than
+// exposing a reason containing imported/user-provided data.
+func priorityTierDefinitionReason(key, name, color string, requireKey, allowEmptyColor bool) string {
+	if requireKey && !isValidColumnKey(strings.ToLower(strings.TrimSpace(key))) {
+		return ReasonInvalidPriorityKey
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > maxPriorityNameLen {
+		return ReasonInvalidPriorityTierName
+	}
+	color = strings.TrimSpace(color)
+	if (!allowEmptyColor || color != "") && !colorHexRe.MatchString(color) {
+		return ReasonInvalidPriorityTierColor
+	}
+	return ""
+}
+
+func priorityTierCountReason(count int) string {
+	if count > maxPriorityTiers {
+		return ReasonPriorityTierLimitReached
+	}
+	return ""
+}
 
 func defaultPriorityTiers() []PriorityTier {
 	return []PriorityTier{
@@ -66,17 +127,7 @@ VALUES (?, ?, ?, ?, ?)`,
 }
 
 func (s *Store) GetProjectPriorities(ctx context.Context, projectID int64) ([]PriorityTier, error) {
-	out, err := s.getProjectPrioritiesQueryer(ctx, s.db, projectID)
-	if err != nil {
-		return nil, err
-	}
-	if len(out) == 0 {
-		if err := s.EnsureDefaultPriorityTiers(ctx, projectID); err != nil {
-			return nil, err
-		}
-		return s.getProjectPrioritiesQueryer(ctx, s.db, projectID)
-	}
-	return out, nil
+	return s.getProjectPrioritiesQueryer(ctx, s.db, projectID)
 }
 
 type sqlRowsQueryer interface {
@@ -148,16 +199,15 @@ ORDER BY project_id ASC, position ASC, id ASC`, args...)
 // UpdatePriorityTier sets the display name and color for a priority tier. Key and position are unchanged.
 func (s *Store) UpdatePriorityTier(ctx context.Context, projectID int64, key, name, color string) error {
 	key = strings.TrimSpace(key)
-	if key == "" {
-		return fmt.Errorf("%w: invalid priority tier key", ErrValidation)
-	}
 	name = strings.TrimSpace(name)
 	color = strings.TrimSpace(color)
-	if name == "" || len(name) > maxPriorityNameLen {
-		return fmt.Errorf("%w: invalid priority tier name", ErrValidation)
-	}
-	if color == "" || !colorHexRe.MatchString(color) {
-		return fmt.Errorf("%w: invalid priority tier color", ErrValidation)
+	switch reason := priorityTierDefinitionReason(key, name, color, true, false); reason {
+	case ReasonInvalidPriorityKey:
+		return priorityError(ErrValidation, reason, "validation error: invalid priority tier key")
+	case ReasonInvalidPriorityTierName:
+		return priorityError(ErrValidation, reason, "validation error: invalid priority tier name")
+	case ReasonInvalidPriorityTierColor:
+		return priorityError(ErrValidation, reason, "validation error: invalid priority tier color")
 	}
 	res, err := s.db.ExecContext(ctx, `
 UPDATE project_priorities
@@ -178,8 +228,8 @@ WHERE project_id = ? AND key = ?`, name, color, projectID, key)
 
 func (s *Store) AddPriorityTier(ctx context.Context, projectID int64, name string) (PriorityTier, error) {
 	name = strings.TrimSpace(name)
-	if name == "" || len(name) > maxPriorityNameLen {
-		return PriorityTier{}, fmt.Errorf("%w: invalid priority tier name", ErrValidation)
+	if priorityTierDefinitionReason("", name, defaultPriorityColor, false, false) == ReasonInvalidPriorityTierName {
+		return PriorityTier{}, priorityError(ErrValidation, ReasonInvalidPriorityTierName, "validation error: invalid priority tier name")
 	}
 
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
@@ -187,22 +237,19 @@ func (s *Store) AddPriorityTier(ctx context.Context, projectID int64, name strin
 		return PriorityTier{}, fmt.Errorf("begin add priority tier tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := serializeProjectWriteTx(ctx, tx, projectID); err != nil {
+		return PriorityTier{}, err
+	}
 
 	tiers, err := s.getProjectPrioritiesQueryer(ctx, tx, projectID)
 	if err != nil {
 		return PriorityTier{}, err
 	}
 	if len(tiers) == 0 {
-		if err := s.ensureDefaultPriorityTiersTx(ctx, tx, projectID); err != nil {
-			return PriorityTier{}, err
-		}
-		tiers, err = s.getProjectPrioritiesQueryer(ctx, tx, projectID)
-		if err != nil {
-			return PriorityTier{}, err
-		}
+		return PriorityTier{}, fmt.Errorf("priority invariant: project %d has no priority tiers", projectID)
 	}
-	if len(tiers) >= maxPriorityTiers {
-		return PriorityTier{}, fmt.Errorf("%w: project may have at most %d priority tiers", ErrValidation, maxPriorityTiers)
+	if priorityTierCountReason(len(tiers)+1) == ReasonPriorityTierLimitReached {
+		return PriorityTier{}, priorityError(ErrValidation, ReasonPriorityTierLimitReached, fmt.Sprintf("validation error: project may have at most %d priority tiers", maxPriorityTiers))
 	}
 
 	usedKeys := make(map[string]struct{}, len(tiers))
@@ -247,8 +294,8 @@ VALUES (?, ?, ?, ?, ?)`, projectID, key, name, defaultPriorityColor, position)
 
 func (s *Store) DeletePriorityTier(ctx context.Context, projectID int64, key string) error {
 	key = strings.TrimSpace(key)
-	if key == "" {
-		return fmt.Errorf("%w: invalid priority tier key", ErrValidation)
+	if !isValidColumnKey(strings.ToLower(key)) {
+		return priorityError(ErrValidation, ReasonInvalidPriorityKey, "validation error: invalid priority tier key")
 	}
 
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
@@ -256,19 +303,16 @@ func (s *Store) DeletePriorityTier(ctx context.Context, projectID int64, key str
 		return fmt.Errorf("begin delete priority tier tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := serializeProjectWriteTx(ctx, tx, projectID); err != nil {
+		return err
+	}
 
 	tiers, err := s.getProjectPrioritiesQueryer(ctx, tx, projectID)
 	if err != nil {
 		return err
 	}
 	if len(tiers) == 0 {
-		if err := s.ensureDefaultPriorityTiersTx(ctx, tx, projectID); err != nil {
-			return err
-		}
-		tiers, err = s.getProjectPrioritiesQueryer(ctx, tx, projectID)
-		if err != nil {
-			return err
-		}
+		return fmt.Errorf("priority invariant: project %d has no priority tiers", projectID)
 	}
 
 	targetIdx := -1
@@ -282,7 +326,7 @@ func (s *Store) DeletePriorityTier(ctx context.Context, projectID int64, key str
 		return ErrNotFound
 	}
 	if len(tiers) <= 1 {
-		return fmt.Errorf("%w: project must have at least 1 priority tier", ErrValidation)
+		return priorityError(ErrValidation, ReasonPriorityTierMinimumRequired, "validation error: project must have at least 1 priority tier")
 	}
 
 	var todoCount int
@@ -292,7 +336,7 @@ WHERE project_id = ? AND priority_key = ?`, projectID, key).Scan(&todoCount); er
 		return fmt.Errorf("count todos for priority tier delete: %w", err)
 	}
 	if todoCount > 0 {
-		return fmt.Errorf("%w: priority tier is not empty", ErrConflict)
+		return priorityError(ErrConflict, ReasonPriorityTierInUse, "conflict: priority tier is not empty")
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -337,7 +381,7 @@ FROM project_priorities
 WHERE project_id = ? AND key = ?
 LIMIT 1`, projectID, priorityKey).Scan(&tier.ID, &tier.ProjectID, &tier.Key, &tier.Name, &tier.Color, &tier.Position); err != nil {
 		if err == sql.ErrNoRows {
-			return PriorityTier{}, fmt.Errorf("%w: invalid priorityKey", ErrValidation)
+			return PriorityTier{}, priorityError(ErrValidation, ReasonInvalidPriorityKey, "validation error: invalid priorityKey")
 		}
 		return PriorityTier{}, fmt.Errorf("validate project priority key: %w", err)
 	}

@@ -14,7 +14,7 @@ CREATE INDEX IF NOT EXISTS idx_project_priorities_project_position
 CREATE INDEX IF NOT EXISTS idx_project_priorities_project_key
   ON project_priorities(project_id, key);
 
-INSERT INTO project_priorities(project_id, key, name, position, color)
+INSERT OR IGNORE INTO project_priorities(project_id, key, name, position, color)
 SELECT p.id, 'low', 'Low', 0, '#9CA3AF' FROM projects p WHERE p.import_batch_id IS NULL
 UNION ALL
 SELECT p.id, 'medium', 'Medium', 1, '#F59E0B' FROM projects p WHERE p.import_batch_id IS NULL

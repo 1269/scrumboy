@@ -14,6 +14,7 @@ import (
 	boardapp "scrumboy/internal/application/board"
 	membershipapp "scrumboy/internal/application/membership"
 	priorityapp "scrumboy/internal/application/priority"
+	sprintapp "scrumboy/internal/application/sprint"
 	todoapp "scrumboy/internal/application/todo"
 	todolinkapp "scrumboy/internal/application/todolink"
 	workflowapp "scrumboy/internal/application/workflow"
@@ -103,6 +104,9 @@ type Server struct {
 	todoMoves           *todoapp.MoveService
 	todoUpdates         *todoapp.UpdateService
 	todoLinkMutations   *todolinkapp.RESTMutationService
+	sprintDefinitions   *sprintapp.RESTDefinitionService
+	sprintLifecycle     *sprintapp.RESTLifecycleService
+	sprintDeletions     *sprintapp.RESTDeletionService
 	workflowMutations   *workflowapp.RESTMutationService
 	priorityMutations   *priorityapp.RESTMutationService
 	membershipMutations *membershipapp.RESTMutationService
@@ -228,6 +232,7 @@ type storeAPI interface {
 	UpdateProjectImage(ctx context.Context, projectID int64, userID int64, image *string, dominantColor string) error
 	UpdateProjectName(ctx context.Context, projectID int64, userID int64, name string) error
 	UpdateProjectDefaultSprintWeeks(ctx context.Context, projectID int64, userID int64, weeks int) error
+	UpdateProjectSprintsEnabled(ctx context.Context, projectID int64, userID int64, enabled bool) error
 	workflowapp.MutationStore
 	priorityapp.MutationStore
 	membershipapp.MutationStore
@@ -268,7 +273,7 @@ type storeAPI interface {
 	GetTagColor(ctx context.Context, userID int64, tagID int64) (*string, error)
 	DeleteTag(ctx context.Context, userID int64, tagID int64, isAnonymousBoard bool) error
 
-	CreateSprint(ctx context.Context, projectID int64, name string, plannedStartAt, plannedEndAt time.Time) (store.Sprint, error)
+	sprintapp.DefinitionStore
 	ListSprints(ctx context.Context, projectID int64) ([]store.Sprint, error)
 	HasSprints(ctx context.Context, projectID int64) (bool, error)
 	ListSprintsWithTodoCount(ctx context.Context, projectID int64) ([]store.SprintWithTodoCount, error)
@@ -276,10 +281,8 @@ type storeAPI interface {
 	GetSprintByID(ctx context.Context, sprintID int64) (store.Sprint, error)
 	GetSprintByProjectNumber(ctx context.Context, projectID, number int64) (store.Sprint, error)
 	GetActiveSprintByProjectID(ctx context.Context, projectID int64) (*store.Sprint, error)
-	ActivateSprint(ctx context.Context, projectID, sprintID int64) error
-	CloseSprint(ctx context.Context, sprintID int64) error
-	UpdateSprint(ctx context.Context, sprintID int64, in store.UpdateSprintInput) error
-	DeleteSprint(ctx context.Context, projectID, sprintID int64) error
+	sprintapp.TransitionStore
+	sprintapp.DeletionStore
 	UpdateTodo(ctx context.Context, todoID int64, in store.UpdateTodoInput, mode store.Mode) (store.Todo, error)
 	DeleteTodo(ctx context.Context, todoID int64, mode store.Mode) error
 	GetProjectIDForTodo(ctx context.Context, todoID int64) (int64, error)
@@ -308,8 +311,8 @@ type storeAPI interface {
 	GetEmailNotifyOrgDefault(ctx context.Context) (store.EmailNotifyPref, bool, error)
 	SetEmailNotifyOrgDefault(ctx context.Context, requesterID int64, raw string) error
 	ClearEmailNotifyOrgDefault(ctx context.Context, requesterID int64) error
-	GetDefaultBoardOrgSetting(ctx context.Context) (projectID int64, customized bool, err error)
-	SetDefaultBoardOrgSetting(ctx context.Context, requesterID, projectID int64) error
+	GetDefaultBoardOrgSetting(ctx context.Context) (projectID int64, role store.ProjectRole, customized bool, err error)
+	SetDefaultBoardOrgSetting(ctx context.Context, requesterID, projectID int64, role store.ProjectRole) error
 	ClearDefaultBoardOrgSetting(ctx context.Context, requesterID int64) error
 
 	// 2FA
@@ -526,6 +529,7 @@ func NewServer(st storeAPI, opts Options) *Server {
 			Lane:         st,
 			LegacyAccess: st,
 			Legacy:       st,
+			Priorities:   st,
 			SlugAccess:   st,
 			SlugSprints:  st,
 		}),
@@ -603,6 +607,22 @@ func NewServer(st storeAPI, opts Options) *Server {
 		Sources:   st,
 		Mutations: st,
 		Publisher: todoLinkMutationPublisher{server: server},
+	})
+	server.sprintDefinitions = sprintapp.NewRESTDefinitionService(sprintapp.RESTDefinitionServiceDependencies{
+		Roles:       st,
+		Definitions: st,
+		Publisher:   sprintDefinitionPublisher{server: server},
+	})
+	server.sprintLifecycle = sprintapp.NewRESTLifecycleService(sprintapp.RESTLifecycleServiceDependencies{
+		Roles:       st,
+		Sprints:     st,
+		Transitions: st,
+		Publisher:   sprintTransitionPublisher{server: server},
+	})
+	server.sprintDeletions = sprintapp.NewRESTDeletionService(sprintapp.RESTDeletionServiceDependencies{
+		Roles:     st,
+		Deletions: st,
+		Publisher: sprintDeletionPublisher{server: server},
 	})
 	server.workflowMutations = workflowapp.NewRESTMutationService(workflowapp.RESTMutationServiceDependencies{
 		Roles:     st,

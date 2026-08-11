@@ -139,6 +139,7 @@ type projectJSON struct {
 	Image              *string    `json:"image,omitempty"`
 	DominantColor      string     `json:"dominantColor"`
 	DefaultSprintWeeks int        `json:"defaultSprintWeeks"`
+	SprintsEnabled     bool       `json:"sprintsEnabled"`
 	ExpiresAt          *time.Time `json:"expiresAt"`
 	CreatorUserID      *int64     `json:"creatorUserId,omitempty"`
 	Slug               string     `json:"slug"`
@@ -251,6 +252,7 @@ func projectToJSON(p store.Project) projectJSON {
 		Image:              p.Image,
 		DominantColor:      p.DominantColor,
 		DefaultSprintWeeks: p.DefaultSprintWeeks,
+		SprintsEnabled:     p.SprintsEnabled,
 		ExpiresAt:          p.ExpiresAt,
 		CreatorUserID:      p.CreatorUserID,
 		Slug:               p.Slug,
@@ -311,6 +313,13 @@ func todoToJSON(t store.Todo) todoJSON {
 		UpdatedAt:        t.UpdatedAt,
 		DoneAt:           t.DoneAt,
 	}
+}
+
+func todoToJSONForProject(t store.Todo, project store.Project) todoJSON {
+	if !project.SprintsEnabled {
+		t.SprintID = nil
+	}
+	return todoToJSON(t)
 }
 
 type activeSprintInfoJSON struct {
@@ -729,17 +738,23 @@ type exportDataJSON struct {
 
 // projectExportJSON: EstimationMode is exported for backup readability; on import the server ignores it and uses store.EstimationModeModifiedFibonacci (v1).
 type projectExportJSON struct {
-	Slug           string           `json:"slug"`
-	Name           string           `json:"name"`
-	EstimationMode string           `json:"estimationMode,omitempty"`
-	Image          *string          `json:"image,omitempty"`
-	DominantColor  string           `json:"dominantColor,omitempty"`
-	ExpiresAt      *time.Time       `json:"expiresAt"`
-	CreatedAt      time.Time        `json:"createdAt"`
-	UpdatedAt      time.Time        `json:"updatedAt"`
-	Todos          []todoExportJSON `json:"todos"`
-	Tags           []tagExportJSON  `json:"tags"`
-	Links          []linkExportJSON `json:"links,omitempty"`
+	Slug               string                       `json:"slug"`
+	Name               string                       `json:"name"`
+	EstimationMode     string                       `json:"estimationMode,omitempty"`
+	Image              *string                      `json:"image,omitempty"`
+	DominantColor      string                       `json:"dominantColor,omitempty"`
+	DefaultSprintWeeks int                          `json:"defaultSprintWeeks,omitempty"`
+	SprintsEnabled     *bool                        `json:"sprintsEnabled,omitempty"`
+	ExpiresAt          *time.Time                   `json:"expiresAt"`
+	CreatedAt          time.Time                    `json:"createdAt"`
+	UpdatedAt          time.Time                    `json:"updatedAt"`
+	WorkflowColumns    []store.WorkflowColumnExport `json:"workflowColumns,omitempty"`
+	PriorityTiers      []store.PriorityTierExport   `json:"priorityTiers"`
+	Sprints            []store.SprintExport         `json:"sprints,omitempty"`
+	Todos              []todoExportJSON             `json:"todos"`
+	Tags               []tagExportJSON              `json:"tags"`
+	Links              []linkExportJSON             `json:"links,omitempty"`
+	Wall               *store.WallExport            `json:"wall,omitempty"`
 }
 
 type todoExportJSON struct {
@@ -750,10 +765,12 @@ type todoExportJSON struct {
 	Rank             int64     `json:"rank"`
 	EstimationPoints *int64    `json:"estimationPoints,omitempty"`
 	AssigneeUserId   *int64    `json:"assigneeUserId,omitempty"`
-	PriorityKey      *string   `json:"priorityKey,omitempty"`
+	SprintNumber     *int64    `json:"sprintNumber,omitempty"`
+	PriorityKey      *string   `json:"priorityKey"`
 	Tags             []string  `json:"tags"`
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
+	DoneAt           *int64    `json:"doneAt,omitempty"`
 }
 
 type tagExportJSON struct {
@@ -780,10 +797,12 @@ func exportDataToJSON(data *store.ExportData) exportDataJSON {
 				Rank:             t.Rank,
 				EstimationPoints: t.EstimationPoints,
 				AssigneeUserId:   t.AssigneeUserId,
+				SprintNumber:     t.SprintNumber,
 				PriorityKey:      t.PriorityKey,
 				Tags:             t.Tags,
 				CreatedAt:        t.CreatedAt,
 				UpdatedAt:        t.UpdatedAt,
+				DoneAt:           t.DoneAt,
 			})
 		}
 
@@ -805,17 +824,12 @@ func exportDataToJSON(data *store.ExportData) exportDataJSON {
 		}
 
 		projects = append(projects, projectExportJSON{
-			Slug:           p.Slug,
-			Name:           p.Name,
-			EstimationMode: p.EstimationMode,
-			Image:          p.Image,
-			DominantColor:  p.DominantColor,
-			ExpiresAt:      p.ExpiresAt,
-			CreatedAt:      p.CreatedAt,
-			UpdatedAt:      p.UpdatedAt,
-			Todos:          todos,
-			Tags:           tags,
-			Links:          links,
+			Slug: p.Slug, Name: p.Name, EstimationMode: p.EstimationMode,
+			Image: p.Image, DominantColor: p.DominantColor,
+			DefaultSprintWeeks: p.DefaultSprintWeeks, SprintsEnabled: p.SprintsEnabled,
+			ExpiresAt: p.ExpiresAt, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+			WorkflowColumns: p.WorkflowColumns, PriorityTiers: p.PriorityTiers, Sprints: p.Sprints,
+			Todos: todos, Tags: tags, Links: links, Wall: p.Wall,
 		})
 	}
 

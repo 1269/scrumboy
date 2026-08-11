@@ -45,6 +45,10 @@ func (s *Store) CreateTodo(ctx context.Context, projectID int64, in CreateTodoIn
 		if err != nil {
 			return Todo{}, fmt.Errorf("begin create todo: %w", err)
 		}
+		if err := serializeProjectWriteTx(ctx, tx, projectID); err != nil {
+			_ = tx.Rollback()
+			return Todo{}, err
+		}
 
 		p, err := s.getProjectForWriteTx(ctx, tx, projectID, mode)
 		if err != nil {
@@ -154,12 +158,6 @@ func (s *Store) CreateTodo(ctx context.Context, projectID int64, in CreateTodoIn
 			userIDPtr = &userID
 		}
 
-		// Write lock early (SQLite acquires write lock on first write in a deferred tx).
-		if _, err := tx.ExecContext(ctx, `UPDATE projects SET updated_at = updated_at WHERE id = ?`, projectID); err != nil {
-			_ = tx.Rollback()
-			return Todo{}, fmt.Errorf("lock project row: %w", err)
-		}
-
 		// Loud-fail if migration is incomplete (NULL local_id would defeat uniqueness).
 		var nullCount int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM todos WHERE project_id = ? AND local_id IS NULL`, projectID).Scan(&nullCount); err != nil {
@@ -199,6 +197,10 @@ func (s *Store) CreateTodo(ctx context.Context, projectID int64, in CreateTodoIn
 		}
 
 		if in.SprintID != nil {
+			if err := lockProjectSprintsEnabledTx(ctx, tx, projectID); err != nil {
+				_ = tx.Rollback()
+				return Todo{}, err
+			}
 			var sprintProjectID int64
 			if err := tx.QueryRowContext(ctx, `SELECT project_id FROM sprints WHERE id = ?`, *in.SprintID).Scan(&sprintProjectID); err != nil {
 				_ = tx.Rollback()
@@ -320,14 +322,15 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 }
 
 type UpdateTodoInput struct {
-	Title            string
-	Body             string
-	Tags             []string
-	EstimationPoints *int64
-	AssigneeUserID   *int64
-	SprintID         *int64  // when nil, don't update; when non-nil, set to that sprint
-	ClearSprint      bool    // when true, set sprint_id to NULL (backlog); overrides SprintID
-	PriorityKey      *string // NULL = no priority set
+	Title              string
+	Body               string
+	Tags               []string
+	EstimationPoints   *int64
+	AssigneeUserID     *int64
+	SprintID           *int64  // when nil, don't update; when non-nil, set to that sprint
+	ClearSprint        bool    // when true, set sprint_id to NULL (backlog); overrides SprintID
+	PriorityKey        *string // nil means clear when PriorityKeyPresent is true
+	PriorityKeyPresent bool    // false preserves the existing priority assignment
 }
 
 // resolveDoneAtForColumnTransition returns the value to write for done_at.
@@ -402,6 +405,13 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 		return Todo{}, fmt.Errorf("begin update todo: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE projects
+		SET updated_at = updated_at
+		WHERE id = (SELECT project_id FROM todos WHERE id = ?)
+	`, todoID); err != nil {
+		return Todo{}, fmt.Errorf("serialize todo project write: %w", err)
+	}
 
 	existing, err := getTodoTx(ctx, tx, todoID)
 	if err != nil {
@@ -526,11 +536,17 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 		}
 	}
 
+	sprintAssignmentChanged := in.SprintID != nil && !sameInt64Ptr(existing.SprintID, in.SprintID)
 	if in.ClearSprint || in.SprintID != nil {
 		if !actorRole.HasMinimumRole(RoleMaintainer) {
 			return Todo{}, ErrUnauthorized
 		}
 		if in.SprintID != nil {
+			if sprintAssignmentChanged {
+				if err := lockProjectSprintsEnabledTx(ctx, tx, existing.ProjectID); err != nil {
+					return Todo{}, err
+				}
+			}
 			var sprintProjectID int64
 			if err := tx.QueryRowContext(ctx, `SELECT project_id FROM sprints WHERE id = ?`, *in.SprintID).Scan(&sprintProjectID); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
@@ -544,8 +560,12 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 		}
 	}
 
-	if in.PriorityKey != nil {
-		if _, err := validateProjectPriorityKeyTx(ctx, tx, existing.ProjectID, *in.PriorityKey); err != nil {
+	effectivePriorityKey := cloneStringPtr(existing.PriorityKey)
+	if in.PriorityKeyPresent {
+		effectivePriorityKey = cloneStringPtr(in.PriorityKey)
+	}
+	if effectivePriorityKey != nil {
+		if _, err := validateProjectPriorityKeyTx(ctx, tx, existing.ProjectID, *effectivePriorityKey); err != nil {
 			return Todo{}, err
 		}
 	}
@@ -590,8 +610,8 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 		estimationPoints = *in.EstimationPoints
 	}
 	var priorityKeyValue any
-	if in.PriorityKey != nil {
-		priorityKeyValue = *in.PriorityKey
+	if effectivePriorityKey != nil {
+		priorityKeyValue = *effectivePriorityKey
 	}
 
 	nowMs := time.Now().UTC().UnixMilli()
@@ -676,7 +696,7 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 	if !sameInt64Ptr(existing.EstimationPoints, in.EstimationPoints) {
 		changedFields = append(changedFields, "estimation")
 	}
-	if !sameStringPtr(existing.PriorityKey, in.PriorityKey) {
+	if !sameStringPtr(existing.PriorityKey, effectivePriorityKey) {
 		changedFields = append(changedFields, "priority")
 	}
 	existingTags := make(map[string]struct{}, len(existing.Tags))
@@ -729,7 +749,7 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 			}
 			if containsString(changedFields, "priority") {
 				before["priority_key"] = existing.PriorityKey
-				after["priority_key"] = in.PriorityKey
+				after["priority_key"] = effectivePriorityKey
 			}
 			meta["before"] = before
 			meta["after"] = after
@@ -758,7 +778,7 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 	existing.Body = in.Body
 	existing.AssigneeUserID = cloneInt64Ptr(in.AssigneeUserID)
 	existing.EstimationPoints = cloneInt64Ptr(in.EstimationPoints)
-	existing.PriorityKey = cloneStringPtr(in.PriorityKey)
+	existing.PriorityKey = cloneStringPtr(effectivePriorityKey)
 	if updateSprint {
 		if in.ClearSprint {
 			existing.SprintID = nil

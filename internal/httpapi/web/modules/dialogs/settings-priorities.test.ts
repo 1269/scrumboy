@@ -351,6 +351,94 @@ describe('settings-priorities', () => {
     expect(rerender).toHaveBeenCalledTimes(1);
   });
 
+  it('stops after a partial PATCH failure and resynchronizes the draft from the server', async () => {
+    const rerender = vi.fn().mockResolvedValue(undefined);
+    const mod = await loadPriorityModule();
+    await primeOkPriorityState(mod, rerender);
+
+    render(mod.loadPriorityTabContent({ slug: 'alpha', rerender }));
+    mod.bindPriorityTabInteractions({
+      signal: new AbortController().signal,
+      settingsDialog: null,
+      closeSettingsBtn: null,
+      rerender,
+    });
+
+    const lowInput = document.querySelector('[data-priority-name="low"]');
+    const mediumInput = document.querySelector('[data-priority-name="medium"]');
+    const urgentInput = document.querySelector('[data-priority-name="urgent"]');
+    const saveBtn = document.querySelector('[data-priority-save-changes]');
+    if (!(lowInput instanceof HTMLInputElement)) throw new Error('missing low priority input');
+    if (!(mediumInput instanceof HTMLInputElement)) throw new Error('missing medium priority input');
+    if (!(urgentInput instanceof HTMLInputElement)) throw new Error('missing urgent priority input');
+    if (!(saveBtn instanceof HTMLElement)) throw new Error('missing priority save button');
+
+    lowInput.value = 'Low server change';
+    lowInput.dispatchEvent(new Event('input', { bubbles: true }));
+    mediumInput.value = 'Medium rejected change';
+    mediumInput.dispatchEvent(new Event('input', { bubbles: true }));
+    urgentInput.value = 'Urgent unsent change';
+    urgentInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+    apiFetchMock.mockReset();
+    apiFetchMock.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('second patch failed'));
+    invalidateBoardMock.mockImplementationOnce(async () => {
+      selectorState.board = {
+        priorityOrder: [
+          { key: 'low', name: 'Low server change', color: '#111111' },
+          { key: 'medium', name: 'Medium', color: '#222222' },
+          { key: 'urgent', name: 'Urgent', color: '#333333' },
+        ],
+      };
+    });
+
+    saveBtn.click();
+    await flushPromises(12);
+
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+    expect(apiFetchMock.mock.calls[0]?.[0]).toBe('/api/board/alpha/priorities/low');
+    expect(apiFetchMock.mock.calls[1]?.[0]).toBe('/api/board/alpha/priorities/medium');
+    expect(invalidateBoardMock).toHaveBeenCalledWith('alpha', 'bug', 'query', '42', null, null, true);
+    expect(rerender).toHaveBeenCalledTimes(1);
+    expect(mod.isPriorityDraftDirty()).toBe(false);
+    expect(showToastMock).toHaveBeenCalledWith('second patch failed');
+  });
+
+  it('refetches after an ambiguous first failure and requires reload if resynchronization fails', async () => {
+    const rerender = vi.fn().mockResolvedValue(undefined);
+    const mod = await loadPriorityModule();
+    await primeOkPriorityState(mod, rerender);
+
+    render(mod.loadPriorityTabContent({ slug: 'alpha', rerender }));
+    mod.bindPriorityTabInteractions({
+      signal: new AbortController().signal,
+      settingsDialog: null,
+      closeSettingsBtn: null,
+      rerender,
+    });
+
+    const nameInput = document.querySelector('[data-priority-name="low"]');
+    const saveBtn = document.querySelector('[data-priority-save-changes]');
+    if (!(nameInput instanceof HTMLInputElement)) throw new Error('missing priority input');
+    if (!(saveBtn instanceof HTMLElement)) throw new Error('missing priority save button');
+    nameInput.value = 'Ambiguous write';
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+    apiFetchMock.mockReset();
+    apiFetchMock.mockRejectedValueOnce(new Error('network result unknown'));
+    invalidateBoardMock.mockRejectedValueOnce(new Error('refresh failed'));
+
+    saveBtn.click();
+    await flushPromises(12);
+
+    expect(apiFetchMock).toHaveBeenCalledTimes(1);
+    expect(invalidateBoardMock).toHaveBeenCalledWith('alpha', 'bug', 'query', '42', null, null, true);
+    expect(rerender).not.toHaveBeenCalled();
+    expect(mod.isPriorityDraftDirty()).toBe(false);
+    expect(showToastMock).toHaveBeenNthCalledWith(1, 'network result unknown');
+    expect(showToastMock).toHaveBeenNthCalledWith(2, enCatalog['settings.priorities.toast.reloadRequired']);
+  });
+
   it('deletes an empty priority tier through the priorities delete route', async () => {
     const rerender = vi.fn().mockResolvedValue(undefined);
     const mod = await loadPriorityModule();

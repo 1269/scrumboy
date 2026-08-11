@@ -1,7 +1,7 @@
 <p align="center">
   <img width="372" src="internal/httpapi/web/githublogo.png" alt="scrumboy logo" />
   <br />
-  <img src="https://img.shields.io/badge/version-v3.29.7-blue" alt="version" />
+  <img src="https://img.shields.io/badge/version-v3.30.3-blue" alt="version" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--v3-orange" alt="license" /></a>
   <img src="https://img.shields.io/badge/i18n-23%20languages-yellow" alt="i18n" />
   <a href="https://github.com/markrai/scrumboy/actions/workflows/ci.yml"><img src="https://github.com/markrai/scrumboy/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
@@ -144,11 +144,12 @@ Simplicity of a light Kanban, with the power of structured systems: Roles, sprin
 # Features
 
 - Custom Workflows: You can create any combination of workflow you want, per project, with user-defined "Done" lane.
+- Custom Priority Tiers: each project has ordered, color-coded priority definitions with stable keys; maintainers configure tiers and assign them to todos.
 - Realtime SSE enabled boards for instant multi-user actions.
 - **Webhooks (API-only, full mode):** Register URLs per project so Scrumboy can POST JSON when subscribed domain events fire (e.g. `todo.assigned`). For your own automations, not in-app or browser notifications. See [Integrations](#integrations--api-access).
 - Customizable Tags: Users can inherit and customize tag colors.
 - Advanced filtering: Search todos based on text or tags.
-- Sprints: create, activate, close; sprint filter on board; default sprint weeks (1 or 2) per project.
+- Sprints: create, activate, close; sprint filter on board; default sprint weeks (1 or 2) per project. Maintainers can disable sprints per project without deleting sprint history or todo assignments, then re-enable them later.
 - Authentication & 2FA: TOTP supported when `SCRUMBOY_ENCRYPTION_KEY` is set.
 - Self-service password reset email (optional, requires SMTP + `SCRUMBOY_ENCRYPTION_KEY` + `SCRUMBOY_PUBLIC_BASE_URL`): see [docs/smtp.md](docs/smtp.md).
 - Audit trail: append-only `audit_events` table; todo/member/project/link actions logged (see [docs/audit-trail.md](docs/audit-trail.md)).
@@ -485,7 +486,7 @@ A user must be a member of a project to access it; system role alone does not gr
 
 
 - **View** (board, backlog, burndown, charts, etc.): Any project role (Viewer or above).
-- **Create/edit/move/delete todos, assign, sprints**: Maintainer only. Contributor cannot create, delete, move, or assign; cannot edit title, tags, sprint, or estimation.
+- **Create/edit/move/delete todos, assign, sprints, priorities**: Maintainer only. Contributor cannot create, delete, move, assign, or configure priorities; cannot edit title, tags, sprint, priority, or estimation.
 - **Edit body when assigned**: Contributor can edit the body field only when the todo is assigned to them. Maintainer has full edit.
 - **Manage members** (add/remove members, change role): Maintainer only.
 - **Delete project**: Maintainer only.
@@ -516,6 +517,12 @@ When importing a backup JSON, you choose how it is applied:
 
 
 In **anonymous mode**, full-scope import is not allowed; you can only import into the current board (todos and tags are added to that board).
+
+Backup format 1.1 remains backward-compatible with backups created before
+priorities existed. New exports explicitly emit `priorityTiers` (`[]` means
+the canonical defaults) and todo `priorityKey` (`null` means no priority).
+During matched-project merge, absent legacy fields preserve target definitions
+or assignments, while explicit `null` clears a todo assignment.
 
 ---
 

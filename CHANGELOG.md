@@ -1,16 +1,121 @@
 # Changelog
 
-> **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.29.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags), **3.29.0** (MCP JSON-RPC error/`board_get` identity) - see those releases.
-
-## [3.30.0] - 2026-08-05
+## [3.31.0] - 2026-08-11
 
 ### Added
 
-- **Todo priority** - Todos can now carry a priority, modeled as per-project customizable tiers (add/rename/recolor/delete) rather than a fixed global enum, mirroring the existing workflow-column feature. New projects are seeded with four default tiers: Low, Medium, High, Urgent. Manage tiers under Settings → Priorities (maintainer role required); pick a todo's priority from the now-dynamic Priority field in the todo dialog. The selected tier renders as a colored badge on the board card. REST (`GET/POST /api/board/{slug}/priorities`, `PATCH`/`DELETE .../priorities/{key}`, `GET .../priorities/counts`) and MCP (`priorities_list`, `priorities_create`, `priorities_update`, `priorities_delete`) both expose the same CRUD surface; `todos_create`/`todos_update` and their REST equivalents gained a `priorityKey` field. Deleting a tier is blocked while any todo still references it, or if it's the project's last remaining tier. Backup export/import round-trips both custom tiers and each todo's priority.
+- **Customizable project priority tiers** - Maintainers can create, rename,
+  recolor, and delete unused priority tiers. Todos can carry a stable
+  `priorityKey`; board responses include ordered tier definitions, and REST and
+  MCP expose priority configuration operations.
+- **Priority-aware backup/import** - Export format 1.1 now emits explicit
+  priority presence while remaining compatible with older 1.1 backups.
+
+### Fixed
+
+- REST todo PATCH distinguishes omitted priority (preserve), explicit `null`
+  (clear), and a string key (assign). Merge import enforces that every stored
+  todo priority resolves within its project.
+- Priority mutations and merge imports share project-level SQLite writer
+  serialization, preventing avoidable busy errors and delete/assignment races.
+
+> **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.31.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags), **3.29.0** (MCP JSON-RPC error/`board_get` identity), **3.30.0** (reversible per-project sprint capability), **3.31.0** (per-project priority tiers) - see those releases.
+
+## [3.30.3] - 2026-08-10
 
 ### Changed
 
-- **Priority filtering/sorting is not included in this release** - the board read/query pipeline (REST and MCP) does not yet support filtering or sorting by priority; only per-tier "in use" counts (for the Settings tab's delete guard) are available. Tracked as a follow-up.
+- **GitHub Actions upgrades** - Bump `actions/setup-go` to `v7.0.0`,
+  `github/codeql-action` to `v4.37.3`, `ossf/scorecard-action` to `v2.4.4`,
+  and `docker/login-action` to `v4.5.1`.
+
+## [3.30.2] - 2026-08-09
+
+### Changed
+
+- **Go dependency upgrades** - Bump `github.com/coreos/go-oidc/v3` to `v3.20.0`,
+  `github.com/golang-jwt/jwt/v5` to `v5.3.1`, and `modernc.org/sqlite` to
+  `v1.54.0` (SQLite 3.53.3 engine; transitive `modernc.org/libc` to `v1.74.1`).
+
+## [3.30.1] - 2026-08-09
+
+### Added
+
+- **Configurable role for default-board auto-enrollment** - The org-wide
+  "default board for new users" admin setting now accepts a project role
+  (Viewer, Contributor, or Maintainer) alongside the board, instead of always
+  enrolling new users as a Viewer. Settings → Users shows a role picker next to
+  the project picker. Existing configurations with no role set keep enrolling at
+  Viewer, and clearing the override resets the role back to that same Viewer
+  fallback.
+
+- **Default-board GET consistency and role-read errors** - The admin GET path
+  now reads `defaultBoardProjectId` and `defaultBoardRole` from one read-only
+  SQLite snapshot. Real database errors on the role row propagate instead of
+  being reported as Viewer.
+
+### Changed
+
+- **Omitted `role` preserves an existing default-board role** - PUT
+  `/api/admin/settings/default-board` with only `projectId` keeps a previously
+  configured role instead of resetting it to Viewer, so older clients that do
+  not send `role` cannot downgrade a setting they do not understand. First-time
+  configure with no stored role still defaults to Viewer.
+
+## [3.30.0] - 2026-08-09
+
+### Added
+
+- **Reversible per-project sprint capability** - Maintainers can disable sprints
+  from project settings without deleting or changing sprint records, lifecycle
+  timestamps, or todo-to-sprint associations. Existing and imported projects
+  default to enabled, backups preserve the setting, and older backups without
+  it remain compatible.
+
+### Changed
+
+- **Disabled sprint policy is enforced across every canonical boundary** -
+  Sprint create, update, activate, close, and delete operations are rejected
+  consistently through REST and both MCP transports. Todo creation or updates
+  cannot introduce or change a non-null sprint assignment while disabled;
+  unrelated edits preserve dormant assignments and explicit removal remains
+  available. Transactional project locking keeps capability changes and
+  mutations race-safe without bypassing the sprint application services.
+
+- **Live reads and UI honor suspended sprints** - Board and dashboard
+  projections expose no effective active sprint and treat dormant sprint todos
+  as unscheduled while retaining historical data. Sprint filters, controls,
+  chips, and sprint-scoped charts are removed or rejected while disabled.
+  Re-enabling forces fresh board and sprint data so the original lifecycle
+  state and todo associations become effective again without reconstruction.
+
+## [3.29.9] - 2026-08-08
+
+### Security
+
+- **npm advisories for DOMPurify, Mermaid, and transitive NanoID** - Pin
+  `dompurify` to `3.4.13`, `mermaid` to `11.16.1`, and `nanoid` to `3.3.17`
+  beneath PostCSS via npm overrides so the frontend resolves patched releases
+  for GHSA-55q2-fjhq-7xh7, GHSA-2v8p-3f2j-5mp7, GHSA-3rrr-jr9j-h3q3,
+  GHSA-6x64-9x62-f2gx, GHSA-c4c3-pg64-4m4v, GHSA-rhh3-jpg6-66xh, and
+  GHSA-2v37-7h3g-55p8. Vendored browser bundles and documentation pins updated;
+  no application behavior change.
+
+## [3.29.8] - 2026-08-08
+
+### Changed
+
+- **Sprint mutations move behind application services** - REST and MCP sprint
+  definition, lifecycle, and deletion operations now use prepared application
+  services with narrow capability boundaries. Existing validation,
+  authorization, response, event, and compatibility contracts are preserved,
+  with comprehensive application, store, REST, and MCP contract coverage.
+
+### Fixed
+
+- **Sprint close mutations are project-scoped** - Closing a sprint now requires
+  both its project and sprint identity, preventing an authorized request for one
+  project from closing a sprint belonging to another project.
 
 ## [3.29.7] - 2026-08-05
 

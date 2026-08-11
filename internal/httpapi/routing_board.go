@@ -10,6 +10,7 @@ import (
 	"time"
 
 	priorityapp "scrumboy/internal/application/priority"
+	sprintapp "scrumboy/internal/application/sprint"
 	todoapp "scrumboy/internal/application/todo"
 	todolinkapp "scrumboy/internal/application/todolink"
 	workflowapp "scrumboy/internal/application/workflow"
@@ -35,6 +36,30 @@ func writePriorityMutationPrepareError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
 	default:
 		writeInternal(w, err)
+	}
+}
+
+func writeSprintDefinitionPrepareError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, sprintapp.ErrActorRequired):
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+	case errors.Is(err, sprintapp.ErrMaintainerRequired):
+		writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
+	default:
+		writeInternal(w, err)
+	}
+}
+
+func writeSprintLifecyclePrepareError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, sprintapp.ErrActorRequired):
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+	case errors.Is(err, sprintapp.ErrMaintainerRequired):
+		writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
+	case errors.Is(err, sprintapp.ErrSprintNotInProject):
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "not found", nil)
+	default:
+		writeStoreErr(w, err, true)
 	}
 }
 
@@ -120,30 +145,40 @@ func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http
 		}
 
 		var in struct {
-			DefaultSprintWeeks *int `json:"defaultSprintWeeks"`
+			DefaultSprintWeeks *int  `json:"defaultSprintWeeks"`
+			SprintsEnabled     *bool `json:"sprintsEnabled"`
 		}
 		if err := readJSON(w, r, s.maxBody, &in); err != nil {
 			return true
 		}
-		if in.DefaultSprintWeeks == nil {
+		if in.DefaultSprintWeeks == nil && in.SprintsEnabled == nil {
 			writeValidationError(w, "defaultSprintWeeks required", "default_sprint_weeks_required", map[string]any{"field": "defaultSprintWeeks"})
 			return true
 		}
-		if *in.DefaultSprintWeeks != 1 && *in.DefaultSprintWeeks != 2 {
+		if in.DefaultSprintWeeks != nil && *in.DefaultSprintWeeks != 1 && *in.DefaultSprintWeeks != 2 {
 			writeValidationError(w, "defaultSprintWeeks must be 1 or 2", "invalid_default_sprint_weeks", map[string]any{"field": "defaultSprintWeeks"})
 			return true
 		}
-		if project.DefaultSprintWeeks == *in.DefaultSprintWeeks {
-			writeJSON(w, http.StatusOK, map[string]any{"defaultSprintWeeks": *in.DefaultSprintWeeks})
-			return true
-		}
 
-		if err := s.store.UpdateProjectDefaultSprintWeeks(ctx, project.ID, userID, *in.DefaultSprintWeeks); err != nil {
-			writeStoreErr(w, err, true)
-			return true
+		resp := map[string]any{}
+		if in.DefaultSprintWeeks != nil {
+			if project.DefaultSprintWeeks != *in.DefaultSprintWeeks {
+				if err := s.store.UpdateProjectDefaultSprintWeeks(ctx, project.ID, userID, *in.DefaultSprintWeeks); err != nil {
+					writeStoreErr(w, err, true)
+					return true
+				}
+			}
+			resp["defaultSprintWeeks"] = *in.DefaultSprintWeeks
+		}
+		if in.SprintsEnabled != nil {
+			if err := s.store.UpdateProjectSprintsEnabled(ctx, project.ID, userID, *in.SprintsEnabled); err != nil {
+				writeStoreErr(w, err, true)
+				return true
+			}
+			resp["sprintsEnabled"] = *in.SprintsEnabled
 		}
 		s.emitRefreshNeeded(s.requestContext(r), project.ID, "project_settings_updated")
-		writeJSON(w, http.StatusOK, map[string]any{"defaultSprintWeeks": *in.DefaultSprintWeeks})
+		writeJSON(w, http.StatusOK, resp)
 		return true
 	}
 
@@ -304,10 +339,26 @@ func (s *Server) handleBoardWorkflowRoutes(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleBoardPriorityRoutes(w http.ResponseWriter, r *http.Request, rest []string, pc *store.ProjectContext) bool {
 	project := pc.Project
+	ctx := s.requestContext(r)
 
-	// GET /api/board/{slug}/priorities/counts - unfiltered todo counts per tier (maintainer+).
+	// Readers may list the same definitions already included in the initial board projection.
+	if len(rest) == 2 && rest[1] == "priorities" && r.Method == http.MethodGet {
+		priorities, err := s.store.GetProjectPriorities(ctx, project.ID)
+		if err != nil {
+			writeStoreErr(w, err, true)
+			return true
+		}
+		items := make([]priorityTierJSON, 0, len(priorities))
+		for _, tier := range priorities {
+			items = append(items, priorityTierJSON{
+				Key: tier.Key, Name: tier.Name, Color: tier.Color, Position: tier.Position,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		return true
+	}
+
 	if len(rest) == 3 && rest[1] == "priorities" && rest[2] == "counts" && r.Method == http.MethodGet {
-		ctx := s.requestContext(r)
 		userID, ok := store.UserIDFromContext(ctx)
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
@@ -326,24 +377,16 @@ func (s *Server) handleBoardPriorityRoutes(w http.ResponseWriter, r *http.Reques
 		if counts == nil {
 			counts = map[string]int{}
 		}
-		writeJSON(w, http.StatusOK, priorityTierCountsJSON{
-			Slug:                project.Slug,
-			CountsByPriorityKey: counts,
-		})
+		writeJSON(w, http.StatusOK, priorityTierCountsJSON{Slug: project.Slug, CountsByPriorityKey: counts})
 		return true
 	}
 
-	// POST /api/board/{slug}/priorities - add a new priority tier.
 	if len(rest) == 2 && rest[1] == "priorities" && r.Method == http.MethodPost {
-		ctx := s.requestContext(r)
-		prepared, err := s.priorityMutations.Prepare(ctx, priorityapp.ResolvedRESTMutationTarget{
-			ProjectID: project.ID,
-		})
+		prepared, err := s.priorityMutations.Prepare(ctx, priorityapp.ResolvedRESTMutationTarget{ProjectID: project.ID})
 		if err != nil {
 			writePriorityMutationPrepareError(w, err)
 			return true
 		}
-
 		var in struct {
 			Name string `json:"name"`
 		}
@@ -352,44 +395,33 @@ func (s *Server) handleBoardPriorityRoutes(w http.ResponseWriter, r *http.Reques
 		}
 		in.Name = strings.TrimSpace(in.Name)
 		if in.Name == "" {
-			writeValidationError(w, "name required", "name_required", map[string]any{"field": "name"})
+			writeValidationError(w, "name required", "invalid_priority_tier_name", map[string]any{"field": "name"})
 			return true
 		}
 		if len(in.Name) > 200 {
 			writeValidationError(w, "invalid priority tier name", "invalid_priority_tier_name", map[string]any{"field": "name"})
 			return true
 		}
-
 		tier, err := prepared.Create(priorityapp.CreateCommand{Name: in.Name})
 		if err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		writeJSON(w, http.StatusCreated, priorityTierJSON{
-			Key:      tier.Key,
-			Name:     tier.Name,
-			Color:    tier.Color,
-			Position: tier.Position,
-		})
+		writeJSON(w, http.StatusCreated, priorityTierJSON{Key: tier.Key, Name: tier.Name, Color: tier.Color, Position: tier.Position})
 		return true
 	}
 
-	// PATCH /api/board/{slug}/priorities/{key} - update priority tier label and color.
 	if len(rest) == 3 && rest[1] == "priorities" && r.Method == http.MethodPatch {
-		ctx := s.requestContext(r)
-		prepared, err := s.priorityMutations.Prepare(ctx, priorityapp.ResolvedRESTMutationTarget{
-			ProjectID: project.ID,
-		})
+		prepared, err := s.priorityMutations.Prepare(ctx, priorityapp.ResolvedRESTMutationTarget{ProjectID: project.ID})
 		if err != nil {
 			writePriorityMutationPrepareError(w, err)
 			return true
 		}
-		priorityKey := strings.TrimSpace(rest[2])
-		if priorityKey == "" {
+		key := strings.TrimSpace(rest[2])
+		if key == "" {
 			writeValidationError(w, "invalid priority key", "invalid_priority_key", map[string]any{"field": "key"})
 			return true
 		}
-
 		var in struct {
 			Name  string `json:"name"`
 			Color string `json:"color"`
@@ -399,27 +431,15 @@ func (s *Server) handleBoardPriorityRoutes(w http.ResponseWriter, r *http.Reques
 		}
 		in.Name = strings.TrimSpace(in.Name)
 		in.Color = strings.TrimSpace(in.Color)
-		if in.Name == "" {
-			writeValidationError(w, "name required", "name_required", map[string]any{"field": "name"})
-			return true
-		}
-		if len(in.Name) > 200 {
+		if in.Name == "" || len(in.Name) > 200 {
 			writeValidationError(w, "invalid priority tier name", "invalid_priority_tier_name", map[string]any{"field": "name"})
-			return true
-		}
-		if in.Color == "" {
-			writeValidationError(w, "color required", "color_required", map[string]any{"field": "color"})
 			return true
 		}
 		if !store.ValidWorkflowColumnColor(in.Color) {
 			writeValidationError(w, "invalid priority tier color", "invalid_priority_tier_color", map[string]any{"field": "color"})
 			return true
 		}
-		if err := prepared.Update(priorityapp.UpdateCommand{
-			Key:   priorityKey,
-			Name:  in.Name,
-			Color: in.Color,
-		}); err != nil {
+		if err := prepared.Update(priorityapp.UpdateCommand{Key: key, Name: in.Name, Color: in.Color}); err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
@@ -427,22 +447,18 @@ func (s *Server) handleBoardPriorityRoutes(w http.ResponseWriter, r *http.Reques
 		return true
 	}
 
-	// DELETE /api/board/{slug}/priorities/{key} - delete an empty priority tier.
 	if len(rest) == 3 && rest[1] == "priorities" && r.Method == http.MethodDelete {
-		ctx := s.requestContext(r)
-		prepared, err := s.priorityMutations.Prepare(ctx, priorityapp.ResolvedRESTMutationTarget{
-			ProjectID: project.ID,
-		})
+		prepared, err := s.priorityMutations.Prepare(ctx, priorityapp.ResolvedRESTMutationTarget{ProjectID: project.ID})
 		if err != nil {
 			writePriorityMutationPrepareError(w, err)
 			return true
 		}
-		priorityKey := strings.TrimSpace(rest[2])
-		if priorityKey == "" {
+		key := strings.TrimSpace(rest[2])
+		if key == "" {
 			writeValidationError(w, "invalid priority key", "invalid_priority_key", map[string]any{"field": "key"})
 			return true
 		}
-		if err := prepared.Delete(priorityapp.DeleteCommand{Key: priorityKey}); err != nil {
+		if err := prepared.Delete(priorityapp.DeleteCommand{Key: key}); err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
@@ -547,7 +563,7 @@ func (s *Server) handleBoardTodoRoutes(w http.ResponseWriter, r *http.Request, r
 			writeStoreErr(w, err, true)
 			return true
 		}
-		writeJSON(w, http.StatusCreated, todoToJSON(result.Todo))
+		writeJSON(w, http.StatusCreated, todoToJSONForProject(result.Todo, project))
 		return true
 	}
 
@@ -765,7 +781,7 @@ func (s *Server) handleBoardTodoItemRoutes(w http.ResponseWriter, r *http.Reques
 			}
 			return true
 		}
-		writeJSON(w, http.StatusOK, todoToJSON(todo))
+		writeJSON(w, http.StatusOK, todoToJSONForProject(todo, project))
 		return true
 	}
 
@@ -814,10 +830,12 @@ func (s *Server) handleBoardTodoItemRoutes(w http.ResponseWriter, r *http.Reques
 				Tags:             todoapp.Field[[]string]{Present: true, Value: in.Tags},
 				EstimationPoints: todoapp.Field[*int64]{Present: true, Value: in.EstimationPoints},
 				AssigneeUserID:   todoapp.Field[*int64]{Present: true, Value: in.AssigneeUserID},
-				PriorityKey:      todoapp.Field[*string]{Present: true, Value: in.PriorityKey},
 			}
 			if _, hasSprintID := raw["sprintId"]; hasSprintID {
 				patch.SprintID = todoapp.Field[*int64]{Present: true, Value: in.SprintID}
+			}
+			if _, hasPriorityKey := raw["priorityKey"]; hasPriorityKey {
+				patch.PriorityKey = todoapp.Field[*string]{Present: true, Value: in.PriorityKey}
 			}
 			prepared := s.todoUpdates.Prepare(s.requestContext(r), todoapp.ResolvedUpdateTarget{
 				ProjectContext: *pc,
@@ -832,7 +850,7 @@ func (s *Server) handleBoardTodoItemRoutes(w http.ResponseWriter, r *http.Reques
 				writeStoreErr(w, err, true)
 				return true
 			}
-			writeJSON(w, http.StatusOK, todoToJSON(result.Todo))
+			writeJSON(w, http.StatusOK, todoToJSONForProject(result.Todo, project))
 			return true
 
 		case http.MethodDelete:
@@ -895,7 +913,7 @@ func (s *Server) handleBoardTodoItemRoutes(w http.ResponseWriter, r *http.Reques
 			writeStoreErr(w, err, true)
 			return true
 		}
-		writeJSON(w, http.StatusOK, todoToJSON(result.Todo))
+		writeJSON(w, http.StatusOK, todoToJSONForProject(result.Todo, project))
 		return true
 	}
 
@@ -928,14 +946,11 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 	// POST /api/board/{slug}/sprints - create sprint (Maintainer+)
 	if len(rest) == 2 && rest[1] == "sprints" && r.Method == http.MethodPost {
 		ctx := s.requestContext(r)
-		userID, ok := store.UserIDFromContext(ctx)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
-			return true
-		}
-		role, err := s.store.GetProjectRole(ctx, project.ID, userID)
-		if err != nil || !role.HasMinimumRole(store.RoleMaintainer) {
-			writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
+		prepared, err := s.sprintDefinitions.PrepareCreate(ctx, sprintapp.ResolvedRESTProjectTarget{
+			ProjectID: project.ID,
+		})
+		if err != nil {
+			writeSprintDefinitionPrepareError(w, err)
 			return true
 		}
 		var in struct {
@@ -950,12 +965,15 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 			writeValidationError(w, "name required", "name_required", map[string]any{"field": "name"})
 			return true
 		}
-		sprint, err := s.store.CreateSprint(ctx, project.ID, in.Name, time.UnixMilli(in.PlannedStartAt), time.UnixMilli(in.PlannedEndAt))
+		sprint, err := prepared.Create(sprintapp.CreateCommand{
+			Name:           in.Name,
+			PlannedStartAt: time.UnixMilli(in.PlannedStartAt),
+			PlannedEndAt:   time.UnixMilli(in.PlannedEndAt),
+		})
 		if err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		s.emitRefreshNeeded(s.requestContext(r), project.ID, "sprint_created")
 		writeJSON(w, http.StatusCreated, sprintToJSON(sprint))
 		return true
 	}
@@ -998,14 +1016,12 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 
 		case http.MethodPatch:
 			ctx := s.requestContext(r)
-			userID, ok := store.UserIDFromContext(ctx)
-			if !ok {
-				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
-				return true
-			}
-			role, err := s.store.GetProjectRole(ctx, project.ID, userID)
-			if err != nil || !role.HasMinimumRole(store.RoleMaintainer) {
-				writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
+			prepared, err := s.sprintDefinitions.PrepareUpdate(ctx, sprintapp.ResolvedRESTSprintTarget{
+				ProjectID: project.ID,
+				SprintID:  sp.ID,
+			})
+			if err != nil {
+				writeSprintDefinitionPrepareError(w, err)
 				return true
 			}
 			var in struct {
@@ -1016,43 +1032,36 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 			if err := readJSON(w, r, s.maxBody, &in); err != nil {
 				return true
 			}
-			opts := store.UpdateSprintInput{}
-			if in.Name != nil {
-				opts.Name = in.Name
-			}
+			command := sprintapp.UpdateCommand{Name: in.Name}
 			if in.PlannedStartAt != nil {
 				t := time.UnixMilli(*in.PlannedStartAt)
-				opts.PlannedStartAt = &t
+				command.PlannedStartAt = &t
 			}
 			if in.PlannedEndAt != nil {
 				t := time.UnixMilli(*in.PlannedEndAt)
-				opts.PlannedEndAt = &t
+				command.PlannedEndAt = &t
 			}
-			if err := s.store.UpdateSprint(ctx, sprintID, opts); err != nil {
+			if err := prepared.Update(command); err != nil {
 				writeStoreErr(w, err, true)
 				return true
 			}
-			s.emitRefreshNeeded(s.requestContext(r), project.ID, "sprint_updated")
 			w.WriteHeader(http.StatusNoContent)
 			return true
 
 		case http.MethodDelete:
 			ctx := s.requestContext(r)
-			userID, ok := store.UserIDFromContext(ctx)
-			if !ok {
-				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+			prepared, err := s.sprintDeletions.PrepareDelete(ctx, sprintapp.DeletionTarget{
+				ProjectID: project.ID,
+				SprintID:  sprintID,
+			})
+			if err != nil {
+				writeSprintLifecyclePrepareError(w, err)
 				return true
 			}
-			role, err := s.store.GetProjectRole(ctx, project.ID, userID)
-			if err != nil || !role.HasMinimumRole(store.RoleMaintainer) {
-				writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
-				return true
-			}
-			if err := s.store.DeleteSprint(ctx, project.ID, sprintID); err != nil {
+			if err := prepared.Delete(); err != nil {
 				writeStoreErr(w, err, true)
 				return true
 			}
-			s.emitRefreshNeeded(s.requestContext(r), project.ID, "sprint_deleted")
 			w.WriteHeader(http.StatusNoContent)
 			return true
 
@@ -1085,21 +1094,18 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 			return true
 		}
 		ctx := s.requestContext(r)
-		userID, ok := store.UserIDFromContext(ctx)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+		prepared, err := s.sprintLifecycle.PrepareActivate(ctx, sprintapp.TransitionTarget{
+			ProjectID: project.ID,
+			SprintID:  sprintID,
+		})
+		if err != nil {
+			writeSprintLifecyclePrepareError(w, err)
 			return true
 		}
-		role, err := s.store.GetProjectRole(ctx, project.ID, userID)
-		if err != nil || !role.HasMinimumRole(store.RoleMaintainer) {
-			writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
-			return true
-		}
-		if err := s.store.ActivateSprint(ctx, project.ID, sprintID); err != nil {
+		if err := prepared.Activate(); err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		s.emitRefreshNeeded(s.requestContext(r), project.ID, "sprint_activated")
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}
@@ -1112,21 +1118,18 @@ func (s *Server) handleBoardSprintRoutes(w http.ResponseWriter, r *http.Request,
 			return true
 		}
 		ctx := s.requestContext(r)
-		userID, ok := store.UserIDFromContext(ctx)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+		prepared, err := s.sprintLifecycle.PrepareClose(ctx, sprintapp.TransitionTarget{
+			ProjectID: project.ID,
+			SprintID:  sprintID,
+		})
+		if err != nil {
+			writeSprintLifecyclePrepareError(w, err)
 			return true
 		}
-		role, err := s.store.GetProjectRole(ctx, project.ID, userID)
-		if err != nil || !role.HasMinimumRole(store.RoleMaintainer) {
-			writeError(w, http.StatusForbidden, "FORBIDDEN", "maintainer or higher required", nil)
-			return true
-		}
-		if err := s.store.CloseSprint(ctx, sprintID); err != nil {
+		if err := prepared.Close(); err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		s.emitRefreshNeeded(s.requestContext(r), project.ID, "sprint_closed")
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}

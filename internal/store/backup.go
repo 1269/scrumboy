@@ -1,8 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -36,7 +38,8 @@ type WorkflowColumnExport struct {
 	IsDone   bool   `json:"isDone"`
 }
 
-// PriorityTierExport represents a priority tier for backup.
+// PriorityTierExport is the stable project-scoped priority definition used
+// by the v1.1 backup format.
 type PriorityTierExport struct {
 	Key      string `json:"key"`
 	Name     string `json:"name"`
@@ -58,22 +61,28 @@ type SprintExport struct {
 // ProjectExport represents a project with its todos and tags.
 // EstimationMode is exported for readability only; on import it is ignored and we always use EstimationModeModifiedFibonacci (v1).
 type ProjectExport struct {
-	Slug               string                 `json:"slug"`
-	Name               string                 `json:"name"`
-	EstimationMode     string                 `json:"estimationMode,omitempty"`
-	Image              *string                `json:"image,omitempty"`
-	DominantColor      string                 `json:"dominantColor,omitempty"`
-	DefaultSprintWeeks int                    `json:"defaultSprintWeeks,omitempty"`
-	ExpiresAt          *time.Time             `json:"expiresAt"`
-	CreatedAt          time.Time              `json:"createdAt"`
-	UpdatedAt          time.Time              `json:"updatedAt"`
-	WorkflowColumns    []WorkflowColumnExport `json:"workflowColumns,omitempty"`
-	PriorityTiers      []PriorityTierExport   `json:"priorityTiers,omitempty"`
-	Sprints            []SprintExport         `json:"sprints,omitempty"`
-	Todos              []TodoExport           `json:"todos"`
-	Tags               []TagExport            `json:"tags"`
-	Links              []LinkExport           `json:"links,omitempty"`
-	Wall               *WallExport            `json:"wall,omitempty"`
+	Slug               string  `json:"slug"`
+	Name               string  `json:"name"`
+	EstimationMode     string  `json:"estimationMode,omitempty"`
+	Image              *string `json:"image,omitempty"`
+	DominantColor      string  `json:"dominantColor,omitempty"`
+	DefaultSprintWeeks int     `json:"defaultSprintWeeks,omitempty"`
+	// SprintsEnabled is a pointer so absence (older exports predating this field) is
+	// distinguishable from an explicit false; nil is treated as enabled on import.
+	SprintsEnabled  *bool                  `json:"sprintsEnabled,omitempty"`
+	ExpiresAt       *time.Time             `json:"expiresAt"`
+	CreatedAt       time.Time              `json:"createdAt"`
+	UpdatedAt       time.Time              `json:"updatedAt"`
+	WorkflowColumns []WorkflowColumnExport `json:"workflowColumns,omitempty"`
+	PriorityTiers   []PriorityTierExport   `json:"priorityTiers"`
+	// PriorityTiersPresent distinguishes a legacy omission from an explicit
+	// empty array, which means canonical defaults in a priority-aware backup.
+	PriorityTiersPresent bool           `json:"-"`
+	Sprints              []SprintExport `json:"sprints,omitempty"`
+	Todos                []TodoExport   `json:"todos"`
+	Tags                 []TagExport    `json:"tags"`
+	Links                []LinkExport   `json:"links,omitempty"`
+	Wall                 *WallExport    `json:"wall,omitempty"`
 }
 
 // TodoExport represents a todo in export format
@@ -86,11 +95,83 @@ type TodoExport struct {
 	SprintNumber     *int64    `json:"sprintNumber,omitempty"` // project-local sprint number; nil = backlog
 	EstimationPoints *int64    `json:"estimationPoints,omitempty"`
 	AssigneeUserId   *int64    `json:"assigneeUserId,omitempty"`
-	PriorityKey      *string   `json:"priorityKey,omitempty"`
 	Tags             []string  `json:"tags"`
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
 	DoneAt           *int64    `json:"doneAt,omitempty"` // Unix ms; last completion time (set on transition into DONE, preserved on reopen)
+	PriorityKey      *string   `json:"priorityKey"`
+	// PriorityKeyPresent distinguishes preserve-on-merge omission from an
+	// explicit null clear.
+	PriorityKeyPresent bool `json:"-"`
+}
+
+func (p ProjectExport) MarshalJSON() ([]byte, error) {
+	type alias ProjectExport
+	raw, err := json.Marshal(alias(p))
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if !p.PriorityTiersPresent {
+		delete(fields, "priorityTiers")
+	} else if p.PriorityTiers == nil {
+		fields["priorityTiers"] = json.RawMessage("[]")
+	}
+	return json.Marshal(fields)
+}
+
+func (p *ProjectExport) UnmarshalJSON(data []byte) error {
+	type alias ProjectExport
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	raw, present := fields["priorityTiers"]
+	if present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("priorityTiers must be an array")
+	}
+	*p = ProjectExport(decoded)
+	p.PriorityTiersPresent = present
+	return nil
+}
+
+func (t TodoExport) MarshalJSON() ([]byte, error) {
+	type alias TodoExport
+	raw, err := json.Marshal(alias(t))
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if !t.PriorityKeyPresent {
+		delete(fields, "priorityKey")
+	}
+	return json.Marshal(fields)
+}
+
+func (t *TodoExport) UnmarshalJSON(data []byte) error {
+	type alias TodoExport
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	_, present := fields["priorityKey"]
+	*t = TodoExport(decoded)
+	t.PriorityKeyPresent = present
+	return nil
 }
 
 // TagExport represents a tag in export format
@@ -204,7 +285,7 @@ func (s *Store) ExportAllProjects(ctx context.Context, mode Mode) (*ExportData, 
 		// In anonymous mode, export the single current project
 		// We need to get it from the context or find the most recent one
 		rows, err := s.db.QueryContext(ctx, `
-			SELECT id, name, image, slug, dominant_color, estimation_mode, default_sprint_weeks, owner_user_id, creator_user_id, last_activity_at, expires_at, created_at, updated_at
+			SELECT id, name, image, slug, dominant_color, estimation_mode, default_sprint_weeks, sprints_enabled, owner_user_id, creator_user_id, last_activity_at, expires_at, created_at, updated_at
 			FROM projects
 			WHERE expires_at IS NOT NULL AND import_batch_id IS NULL
 			ORDER BY updated_at DESC, id DESC
@@ -221,9 +302,11 @@ func (s *Store) ExportAllProjects(ctx context.Context, mode Mode) (*ExportData, 
 			var ownerUserID sql.NullInt64
 			var creatorUserID sql.NullInt64
 			var image sql.NullString
-			if err := rows.Scan(&p.ID, &p.Name, &image, &p.Slug, &p.DominantColor, &p.EstimationMode, &p.DefaultSprintWeeks, &ownerUserID, &creatorUserID, &lastActivityAtMs, &expiresAtMs, &createdAtMs, &updatedAtMs); err != nil {
+			var sprintsEnabled int
+			if err := rows.Scan(&p.ID, &p.Name, &image, &p.Slug, &p.DominantColor, &p.EstimationMode, &p.DefaultSprintWeeks, &sprintsEnabled, &ownerUserID, &creatorUserID, &lastActivityAtMs, &expiresAtMs, &createdAtMs, &updatedAtMs); err != nil {
 				return nil, fmt.Errorf("scan project: %w", err)
 			}
+			p.SprintsEnabled = sprintsEnabled == 1
 			if image.Valid && image.String != "" {
 				p.Image = &image.String
 			}
@@ -252,7 +335,7 @@ func (s *Store) ExportAllProjects(ctx context.Context, mode Mode) (*ExportData, 
 		}
 
 		rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-			SELECT id, name, image, slug, dominant_color, estimation_mode, default_sprint_weeks, owner_user_id, last_activity_at, expires_at, created_at, updated_at
+			SELECT id, name, image, slug, dominant_color, estimation_mode, default_sprint_weeks, sprints_enabled, owner_user_id, last_activity_at, expires_at, created_at, updated_at
 			FROM projects
 			WHERE %s
 			ORDER BY updated_at DESC, id DESC`, whereClause), args...)
@@ -267,9 +350,11 @@ func (s *Store) ExportAllProjects(ctx context.Context, mode Mode) (*ExportData, 
 			var expiresAtMs sql.NullInt64
 			var ownerUserID sql.NullInt64
 			var image sql.NullString
-			if err := rows.Scan(&p.ID, &p.Name, &image, &p.Slug, &p.DominantColor, &p.EstimationMode, &p.DefaultSprintWeeks, &ownerUserID, &lastActivityAtMs, &expiresAtMs, &createdAtMs, &updatedAtMs); err != nil {
+			var sprintsEnabled int
+			if err := rows.Scan(&p.ID, &p.Name, &image, &p.Slug, &p.DominantColor, &p.EstimationMode, &p.DefaultSprintWeeks, &sprintsEnabled, &ownerUserID, &lastActivityAtMs, &expiresAtMs, &createdAtMs, &updatedAtMs); err != nil {
 				return nil, fmt.Errorf("scan project: %w", err)
 			}
+			p.SprintsEnabled = sprintsEnabled == 1
 			if image.Valid && image.String != "" {
 				p.Image = &image.String
 			}
@@ -300,18 +385,21 @@ func (s *Store) ExportAllProjects(ctx context.Context, mode Mode) (*ExportData, 
 			return nil, fmt.Errorf("export todos for project %d: %w", p.ID, err)
 		}
 
-		// Get workflow, priority tiers, and sprints for export
+		// Get workflow and sprints for export
 		workflow, err := s.GetProjectWorkflow(ctx, p.ID)
 		if err != nil {
 			return nil, fmt.Errorf("export workflow for project %d: %w", p.ID, err)
 		}
-		priorities, err := s.GetProjectPriorities(ctx, p.ID)
-		if err != nil {
-			return nil, fmt.Errorf("export priority tiers for project %d: %w", p.ID, err)
-		}
 		sprints, err := s.ListSprints(ctx, p.ID)
 		if err != nil {
 			return nil, fmt.Errorf("export sprints for project %d: %w", p.ID, err)
+		}
+		priorities, err := s.GetProjectPriorities(ctx, p.ID)
+		if err != nil {
+			return nil, fmt.Errorf("export priorities for project %d: %w", p.ID, err)
+		}
+		if len(priorities) == 0 {
+			return nil, fmt.Errorf("priority invariant: cannot export project %d without priority tiers", p.ID)
 		}
 		sprintIDToNumber := make(map[int64]int64)
 		for _, sp := range sprints {
@@ -346,19 +434,20 @@ func (s *Store) ExportAllProjects(ctx context.Context, mode Mode) (*ExportData, 
 				}
 			}
 			todoExports = append(todoExports, TodoExport{
-				LocalID:          t.LocalID,
-				Title:            t.Title,
-				Body:             t.Body,
-				Status:           strings.ToUpper(t.ColumnKey),
-				Rank:             t.Rank,
-				SprintNumber:     sprintNumber,
-				EstimationPoints: cloneInt64Ptr(t.EstimationPoints),
-				AssigneeUserId:   cloneInt64Ptr(t.AssigneeUserID),
-				PriorityKey:      cloneStringPtr(t.PriorityKey),
-				Tags:             t.Tags,
-				CreatedAt:        t.CreatedAt,
-				UpdatedAt:        t.UpdatedAt,
-				DoneAt:           doneAtMs,
+				LocalID:            t.LocalID,
+				Title:              t.Title,
+				Body:               t.Body,
+				Status:             strings.ToUpper(t.ColumnKey),
+				Rank:               t.Rank,
+				SprintNumber:       sprintNumber,
+				EstimationPoints:   cloneInt64Ptr(t.EstimationPoints),
+				AssigneeUserId:     cloneInt64Ptr(t.AssigneeUserID),
+				Tags:               t.Tags,
+				CreatedAt:          t.CreatedAt,
+				UpdatedAt:          t.UpdatedAt,
+				DoneAt:             doneAtMs,
+				PriorityKey:        cloneStringPtr(t.PriorityKey),
+				PriorityKeyPresent: true,
 			})
 		}
 
@@ -409,19 +498,6 @@ func (s *Store) ExportAllProjects(ctx context.Context, mode Mode) (*ExportData, 
 			}
 		}
 
-		// Priority tiers: export only when non-default
-		var priorityTierExports []PriorityTierExport
-		if !priorityTiersMatchDefault(priorities) {
-			for _, pt := range priorities {
-				priorityTierExports = append(priorityTierExports, PriorityTierExport{
-					Key:      pt.Key,
-					Name:     pt.Name,
-					Color:    pt.Color,
-					Position: pt.Position,
-				})
-			}
-		}
-
 		// Sprints
 		sprintExports := make([]SprintExport, 0, len(sprints))
 		for _, sp := range sprints {
@@ -445,28 +521,40 @@ func (s *Store) ExportAllProjects(ctx context.Context, mode Mode) (*ExportData, 
 			})
 		}
 
+		priorityExports := make([]PriorityTierExport, 0, len(priorities))
+		if !priorityTiersMatchDefault(priorities) {
+			for _, tier := range priorities {
+				priorityExports = append(priorityExports, PriorityTierExport{
+					Key: tier.Key, Name: tier.Name, Color: tier.Color, Position: tier.Position,
+				})
+			}
+		}
+
 		defaultSprintWeeks := p.DefaultSprintWeeks
 		if defaultSprintWeeks != 1 && defaultSprintWeeks != 2 {
 			defaultSprintWeeks = 2
 		}
 
+		sprintsEnabled := p.SprintsEnabled
 		exportProjects = append(exportProjects, ProjectExport{
-			Slug:               p.Slug,
-			Name:               p.Name,
-			EstimationMode:     EstimationModeModifiedFibonacci, // always canonical; never emit from DB to avoid case/typo drift
-			Image:              p.Image,
-			DominantColor:      dominantColor,
-			DefaultSprintWeeks: defaultSprintWeeks,
-			ExpiresAt:          p.ExpiresAt,
-			CreatedAt:          p.CreatedAt,
-			UpdatedAt:          p.UpdatedAt,
-			WorkflowColumns:    workflowColExports,
-			PriorityTiers:      priorityTierExports,
-			Sprints:            sprintExports,
-			Todos:              todoExports,
-			Tags:               tagExports,
-			Links:              linkExports,
-			Wall:               wallExport,
+			Slug:                 p.Slug,
+			Name:                 p.Name,
+			EstimationMode:       EstimationModeModifiedFibonacci, // always canonical; never emit from DB to avoid case/typo drift
+			Image:                p.Image,
+			DominantColor:        dominantColor,
+			DefaultSprintWeeks:   defaultSprintWeeks,
+			SprintsEnabled:       &sprintsEnabled,
+			ExpiresAt:            p.ExpiresAt,
+			CreatedAt:            p.CreatedAt,
+			UpdatedAt:            p.UpdatedAt,
+			WorkflowColumns:      workflowColExports,
+			PriorityTiers:        priorityExports,
+			PriorityTiersPresent: true,
+			Sprints:              sprintExports,
+			Todos:                todoExports,
+			Tags:                 tagExports,
+			Links:                linkExports,
+			Wall:                 wallExport,
 		})
 	}
 
@@ -506,19 +594,151 @@ func workflowMatchesDefault(workflow []WorkflowColumn) bool {
 	return true
 }
 
-// priorityTiersMatchDefault returns true if the project priority tiers match the default tiers.
 func priorityTiersMatchDefault(tiers []PriorityTier) bool {
 	defaults := defaultPriorityTiers()
 	if len(tiers) != len(defaults) {
 		return false
 	}
-	for i, t := range tiers {
-		d := defaults[i]
-		if t.Key != d.Key || t.Name != d.Name || t.Color != d.Color || t.Position != d.Position {
+	for i, tier := range tiers {
+		want := defaults[i]
+		if tier.Key != want.Key || tier.Name != want.Name || tier.Color != want.Color || tier.Position != want.Position {
 			return false
 		}
 	}
 	return true
+}
+
+func priorityTiersFromExport(exported []PriorityTierExport) []PriorityTier {
+	if len(exported) == 0 {
+		return defaultPriorityTiers()
+	}
+	sorted := append([]PriorityTierExport(nil), exported...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
+	tiers := make([]PriorityTier, 0, len(sorted))
+	for position, tier := range sorted {
+		color := strings.TrimSpace(tier.Color)
+		if color == "" {
+			color = defaultPriorityColor
+		}
+		tiers = append(tiers, PriorityTier{
+			Key: strings.ToLower(strings.TrimSpace(tier.Key)), Name: strings.TrimSpace(tier.Name),
+			Color: color, Position: position,
+		})
+	}
+	return tiers
+}
+
+func validPriorityKeys(tiers []PriorityTier) map[string]struct{} {
+	keys := make(map[string]struct{}, len(tiers))
+	for _, tier := range tiers {
+		keys[tier.Key] = struct{}{}
+	}
+	return keys
+}
+
+func validatePriorityTierExports(projectName string, exported []PriorityTierExport) ([]PriorityTier, error) {
+	if priorityTierCountReason(len(exported)) == ReasonPriorityTierLimitReached {
+		return nil, fmt.Errorf("%w: project %q may have at most %d priority tiers", ErrValidation, projectName, maxPriorityTiers)
+	}
+	seen := make(map[string]struct{}, len(exported))
+	for index, tier := range exported {
+		key := strings.ToLower(strings.TrimSpace(tier.Key))
+		reason := priorityTierDefinitionReason(key, tier.Name, tier.Color, true, true)
+		if reason == ReasonInvalidPriorityKey {
+			return nil, fmt.Errorf("%w: project %q priority tier at index %d has invalid key %q", ErrValidation, projectName, index, tier.Key)
+		}
+		if _, exists := seen[key]; exists {
+			return nil, fmt.Errorf("%w: project %q priority tier key %q is duplicate", ErrValidation, projectName, tier.Key)
+		}
+		seen[key] = struct{}{}
+		if reason == ReasonInvalidPriorityTierName {
+			return nil, fmt.Errorf("%w: project %q priority tier %q has invalid name", ErrValidation, projectName, tier.Key)
+		}
+		if reason == ReasonInvalidPriorityTierColor {
+			return nil, fmt.Errorf("%w: project %q priority tier %q has invalid color %q", ErrValidation, projectName, tier.Key, tier.Color)
+		}
+	}
+	return priorityTiersFromExport(exported), nil
+}
+
+func (s *Store) replaceProjectPriorityTiersFromExport(ctx context.Context, tx *sql.Tx, projectID int64, p ProjectExport) error {
+	tiers := priorityTiersFromExport(p.PriorityTiers)
+	if err := s.deleteProjectPrioritiesExec(ctx, tx, projectID); err != nil {
+		return err
+	}
+	return s.insertPriorityTiersExec(ctx, tx, projectID, tiers)
+}
+
+func priorityKeyForInsert(t TodoExport) any {
+	if !t.PriorityKeyPresent || t.PriorityKey == nil {
+		return nil
+	}
+	return strings.ToLower(strings.TrimSpace(*t.PriorityKey))
+}
+
+func validatePriorityReplacementTx(ctx context.Context, tx *sql.Tx, projectID int64, p ProjectExport) error {
+	if !p.PriorityTiersPresent {
+		return nil
+	}
+	newKeys := validPriorityKeys(priorityTiersFromExport(p.PriorityTiers))
+	byLocalID := make(map[int64]TodoExport, len(p.Todos))
+	for _, todo := range p.Todos {
+		byLocalID[todo.LocalID] = todo
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT local_id, priority_key FROM todos WHERE project_id = ? AND priority_key IS NOT NULL`, projectID)
+	if err != nil {
+		return fmt.Errorf("validate priority replacement: %w", err)
+	}
+	defer rows.Close()
+	stranded := make(map[string]struct{})
+	for rows.Next() {
+		var localID int64
+		var current string
+		if err := rows.Scan(&localID, &current); err != nil {
+			return fmt.Errorf("scan priority replacement: %w", err)
+		}
+		effective := strings.ToLower(strings.TrimSpace(current))
+		if imported, represented := byLocalID[localID]; represented && imported.PriorityKeyPresent {
+			if imported.PriorityKey == nil {
+				continue
+			}
+			effective = strings.ToLower(strings.TrimSpace(*imported.PriorityKey))
+		}
+		if _, ok := newKeys[effective]; !ok {
+			stranded[effective] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rows priority replacement: %w", err)
+	}
+	if len(stranded) > 0 {
+		keys := make([]string, 0, len(stranded))
+		for key := range stranded {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		return fmt.Errorf("%w: cannot replace priority tiers for project %q: existing todos would retain removed priorities: %s", ErrValidation, p.Slug, strings.Join(keys, ", "))
+	}
+	return nil
+}
+
+func assertProjectPriorityIntegrityTx(ctx context.Context, tx *sql.Tx, projectID int64) error {
+	var localID int64
+	var key string
+	err := tx.QueryRowContext(ctx, `
+SELECT t.local_id, t.priority_key
+FROM todos t
+LEFT JOIN project_priorities pp
+  ON pp.project_id = t.project_id AND pp.key = t.priority_key
+WHERE t.project_id = ? AND t.priority_key IS NOT NULL AND pp.id IS NULL
+LIMIT 1`, projectID).Scan(&localID, &key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check priority integrity: %w", err)
+	}
+	return fmt.Errorf("priority invariant: todo local_id %d references missing priority %q", localID, key)
 }
 
 // exportAllTodosForProject exports all todos for a project.
@@ -559,6 +779,10 @@ func (s *Store) exportAllTodosForProject(ctx context.Context, projectID int64, m
 			v := sprintID.Int64
 			t.SprintID = &v
 		}
+		if priorityKey.Valid {
+			v := priorityKey.String
+			t.PriorityKey = &v
+		}
 		if !localID.Valid {
 			return nil, fmt.Errorf("%w: todos.local_id is NULL (migration incomplete)", ErrConflict)
 		}
@@ -571,10 +795,6 @@ func (s *Store) exportAllTodosForProject(ctx context.Context, projectID int64, m
 		if assigneeUserID.Valid {
 			v := assigneeUserID.Int64
 			t.AssigneeUserID = &v
-		}
-		if priorityKey.Valid {
-			v := priorityKey.String
-			t.PriorityKey = &v
 		}
 		t.CreatedAt = time.UnixMilli(createdAtMs).UTC()
 		t.UpdatedAt = time.UnixMilli(updatedAtMs).UTC()
@@ -688,50 +908,6 @@ func validColumnKeysFromWorkflowExport(cols []WorkflowColumnExport) map[string]s
 	return out
 }
 
-// priorityTiersFromExport converts export tiers to PriorityTier, sorted by Position.
-// Honors exported Position by sorting; array order in JSON may not match.
-func priorityTiersFromExport(tiers []PriorityTierExport) []PriorityTier {
-	sorted := make([]PriorityTierExport, len(tiers))
-	copy(sorted, tiers)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
-
-	out := make([]PriorityTier, 0, len(sorted))
-	for i, t := range sorted {
-		color := strings.TrimSpace(t.Color)
-		if color == "" || !colorHexRe.MatchString(color) {
-			color = defaultPriorityColor
-		}
-		out = append(out, PriorityTier{
-			Key:      strings.ToLower(strings.TrimSpace(t.Key)),
-			Name:     strings.TrimSpace(t.Name),
-			Color:    color,
-			Position: i,
-		})
-	}
-	return out
-}
-
-// validPriorityKeysFromExport builds the set of valid priority keys for a project export.
-// When tiers is empty, the project uses the default priority tiers (skip-if-default export
-// convention), so the default keys are valid. Assumes tiers are already validated when non-empty.
-func validPriorityKeysFromExport(tiers []PriorityTierExport) map[string]struct{} {
-	if len(tiers) == 0 {
-		out := make(map[string]struct{}, 4)
-		for _, t := range defaultPriorityTiers() {
-			out[t.Key] = struct{}{}
-		}
-		return out
-	}
-	out := make(map[string]struct{}, len(tiers))
-	for _, t := range tiers {
-		key := strings.ToLower(strings.TrimSpace(t.Key))
-		if key != "" {
-			out[key] = struct{}{}
-		}
-	}
-	return out
-}
-
 // statusResolvesInWorkflow returns true if statusFromExport maps to a key in validColumnKeys.
 // Used when WorkflowColumns are present: rejects non-resolvable status (validation error, not fallback).
 func statusResolvesInWorkflow(statusFromExport string, validColumnKeys map[string]struct{}) bool {
@@ -814,32 +990,14 @@ func (s *Store) validateImportPreflight(ctx context.Context, data *ExportData, m
 			validColumnKeys = seenKeys
 		}
 
-		// Validate priority tiers when provided
-		if len(pExport.PriorityTiers) > 0 {
-			seenPriorityKeys := make(map[string]struct{})
-			for j, t := range pExport.PriorityTiers {
-				key := strings.TrimSpace(t.Key)
-				if key == "" {
-					return fmt.Errorf("%w: project %q priority tier at index %d has empty key", ErrValidation, pExport.Name, j)
-				}
-				keyLower := strings.ToLower(key)
-				if !isValidColumnKey(key) {
-					return fmt.Errorf("%w: project %q priority tier key %q is invalid", ErrValidation, pExport.Name, key)
-				}
-				if _, ok := seenPriorityKeys[keyLower]; ok {
-					return fmt.Errorf("%w: project %q priority tier key %q is duplicate", ErrValidation, pExport.Name, key)
-				}
-				seenPriorityKeys[keyLower] = struct{}{}
-				if strings.TrimSpace(t.Name) == "" {
-					return fmt.Errorf("%w: project %q priority tier %q has empty name", ErrValidation, pExport.Name, key)
-				}
-				color := strings.TrimSpace(t.Color)
-				if color != "" && !colorHexRe.MatchString(color) {
-					return fmt.Errorf("%w: project %q priority tier %q has invalid color %q", ErrValidation, pExport.Name, key, t.Color)
-				}
+		var priorityKeys map[string]struct{}
+		if pExport.PriorityTiersPresent {
+			tiers, err := validatePriorityTierExports(pExport.Name, pExport.PriorityTiers)
+			if err != nil {
+				return err
 			}
+			priorityKeys = validPriorityKeys(tiers)
 		}
-		validPriorityKeys := validPriorityKeysFromExport(pExport.PriorityTiers)
 
 		// Validate sprints when provided
 		var validSprintNumbers map[int64]struct{}
@@ -880,10 +1038,10 @@ func (s *Store) validateImportPreflight(ctx context.Context, data *ExportData, m
 					return fmt.Errorf("%w: todo %q in project %q: unknown workflow column %q (not in backup workflowColumns)", ErrValidation, t.Title, pExport.Name, t.Status)
 				}
 			}
-			if t.PriorityKey != nil {
+			if pExport.PriorityTiersPresent && t.PriorityKeyPresent && t.PriorityKey != nil {
 				key := strings.ToLower(strings.TrimSpace(*t.PriorityKey))
-				if _, ok := validPriorityKeys[key]; !ok {
-					return fmt.Errorf("%w: todo %q in project %q: unknown priority key %q (not in backup priorityTiers)", ErrValidation, t.Title, pExport.Name, *t.PriorityKey)
+				if _, ok := priorityKeys[key]; !ok {
+					return fmt.Errorf("%w: todo %q in project %q has unknown priority key %q", ErrValidation, t.Title, pExport.Name, *t.PriorityKey)
 				}
 			}
 			if t.SprintNumber != nil {
@@ -982,67 +1140,6 @@ func (s *Store) validateImportPreflight(ctx context.Context, data *ExportData, m
 			if len(stranded) > 0 {
 				sort.Strings(stranded)
 				return fmt.Errorf("%w: cannot replace workflow for project %q: existing todos reference removed columns: %s", ErrValidation, pExport.Slug, strings.Join(stranded, ", "))
-			}
-		}
-	}
-
-	// Orphan check: merge mode must not replace priority tiers if existing todos would reference removed tiers.
-	// Skip for anonymous mode (no durable projects to merge into).
-	if importMode == "merge" && mode != ModeAnonymous && len(data.Projects) > 0 {
-		whereClause, args, err := s.getExportableProjectsSelector(ctx, mode)
-		if err != nil {
-			return fmt.Errorf("priority orphan check: %w", err)
-		}
-		for _, pExport := range data.Projects {
-			if pExport.Slug == "" || len(pExport.PriorityTiers) == 0 {
-				continue
-			}
-			var projectID int64
-			if err := s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT id FROM projects WHERE slug = ? AND (%s)`, whereClause), append([]any{pExport.Slug}, args...)...).Scan(&projectID); err == sql.ErrNoRows {
-				continue // new project, no orphan risk
-			} else if err != nil {
-				return fmt.Errorf("priority orphan check project %q: %w", pExport.Slug, err)
-			}
-			backupLocalIDs := make(map[int64]struct{})
-			for _, t := range pExport.Todos {
-				backupLocalIDs[t.LocalID] = struct{}{}
-			}
-			newKeys := validPriorityKeysFromExport(pExport.PriorityTiers)
-			rows, err := s.db.QueryContext(ctx, `SELECT local_id, priority_key FROM todos WHERE project_id = ? AND priority_key IS NOT NULL`, projectID)
-			if err != nil {
-				return fmt.Errorf("priority orphan check todos: %w", err)
-			}
-			var stranded []string
-			strandedSeen := make(map[string]struct{})
-			for rows.Next() {
-				var localID int64
-				var priorityKey string
-				if err := rows.Scan(&localID, &priorityKey); err != nil {
-					rows.Close()
-					return fmt.Errorf("priority orphan check scan: %w", err)
-				}
-				if _, inBackup := backupLocalIDs[localID]; inBackup {
-					continue
-				}
-				keyLower := strings.ToLower(strings.TrimSpace(priorityKey))
-				if keyLower == "" {
-					continue
-				}
-				if _, ok := newKeys[keyLower]; ok {
-					continue
-				}
-				if _, seen := strandedSeen[keyLower]; !seen {
-					strandedSeen[keyLower] = struct{}{}
-					stranded = append(stranded, keyLower)
-				}
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return fmt.Errorf("priority orphan check rows: %w", err)
-			}
-			if len(stranded) > 0 {
-				sort.Strings(stranded)
-				return fmt.Errorf("%w: cannot replace priority tiers for project %q: existing todos reference removed priority keys: %s", ErrValidation, pExport.Slug, strings.Join(stranded, ", "))
 			}
 		}
 	}
@@ -1148,6 +1245,9 @@ func (s *Store) importIntoBoard(ctx context.Context, data *ExportData, mode Mode
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if err := serializeProjectWriteTx(ctx, tx, targetProject.ID); err != nil {
+		return nil, err
+	}
 
 	// Import all todos from all projects in the export into the target board
 	for _, pExport := range data.Projects {
@@ -1169,10 +1269,6 @@ func (s *Store) importIntoBoard(ctx context.Context, data *ExportData, mode Mode
 			if err := validateEstimationPoints(tExport.EstimationPoints); err != nil {
 				return nil, err
 			}
-			priorityKey, priorityWarned := resolveImportPriorityKey(ctx, tx, targetProject.ID, tExport.PriorityKey)
-			if priorityWarned {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("Unknown priority %q for todo %q, dropping priority", *tExport.PriorityKey, tExport.Title))
-			}
 
 			createdAtMs := tExport.CreatedAt.UnixMilli()
 			updatedAtMs := tExport.UpdatedAt.UnixMilli()
@@ -1185,15 +1281,17 @@ func (s *Store) importIntoBoard(ctx context.Context, data *ExportData, mode Mode
 			if assigneeVal != nil {
 				assigneeForSQL = *assigneeVal
 			}
-			var priorityKeyForSQL any
-			if priorityKey != nil {
-				priorityKeyForSQL = *priorityKey
+			priorityForSQL := priorityKeyForInsert(tExport)
+			if key, ok := priorityForSQL.(string); ok {
+				if _, err := validateProjectPriorityKeyTx(ctx, tx, targetProject.ID, key); err != nil {
+					return nil, err
+				}
 			}
 
 			res, err := tx.ExecContext(ctx, `
 				INSERT INTO todos(project_id, local_id, title, body, column_key, rank, estimation_points, assignee_user_id, priority_key, created_at, updated_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				targetProject.ID, newLocalID, tExport.Title, tExport.Body, columnKey, tExport.Rank, estimationPoints, assigneeForSQL, priorityKeyForSQL, createdAtMs, updatedAtMs)
+				targetProject.ID, newLocalID, tExport.Title, tExport.Body, columnKey, tExport.Rank, estimationPoints, assigneeForSQL, priorityForSQL, createdAtMs, updatedAtMs)
 			if err != nil {
 				return nil, fmt.Errorf("insert todo: %w", err)
 			}
@@ -1328,23 +1426,9 @@ func (s *Store) importReplaceAll(ctx context.Context, data *ExportData, mode Mod
 				return nil, fmt.Errorf("ensure workflow columns for project %q: %w", pExport.Name, err)
 			}
 		}
-
-		// Priority tiers: custom from export or default
-		if len(pExport.PriorityTiers) > 0 {
-			if err := s.deleteProjectPrioritiesExec(ctx, tx, projectID); err != nil {
-				tx.Rollback()
-				return nil, fmt.Errorf("clear priority tiers for project %q: %w", pExport.Name, err)
-			}
-			tiers := priorityTiersFromExport(pExport.PriorityTiers)
-			if err := s.insertPriorityTiersExec(ctx, tx, projectID, tiers); err != nil {
-				tx.Rollback()
-				return nil, fmt.Errorf("import priority tiers for project %q: %w", pExport.Name, err)
-			}
-		} else {
-			if err := s.ensureDefaultPriorityTiersExec(ctx, tx, projectID); err != nil {
-				tx.Rollback()
-				return nil, fmt.Errorf("ensure priority tiers for project %q: %w", pExport.Name, err)
-			}
+		if err := s.replaceProjectPriorityTiersFromExport(ctx, tx, projectID, pExport); err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("import priority tiers for project %q: %w", pExport.Name, err)
 		}
 
 		sprintIDByNumber, err := insertSprintsForImport(ctx, tx, projectID, pExport.Sprints)
@@ -1463,12 +1547,37 @@ func (s *Store) importMergeUpdate(ctx context.Context, data *ExportData, mode Mo
 	if mode == ModeAnonymous {
 		return s.importCreateCopy(ctx, data, mode)
 	}
+	matchedProjectIDs := make([]int64, 0, len(data.Projects))
+	seenMatched := make(map[int64]struct{}, len(data.Projects))
+	for _, project := range data.Projects {
+		if strings.TrimSpace(project.Slug) == "" {
+			continue
+		}
+		var projectID int64
+		err := s.db.QueryRowContext(ctx, `SELECT id FROM projects WHERE slug = ? AND import_batch_id IS NULL`, project.Slug).Scan(&projectID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("pre-resolve merge project %q: %w", project.Slug, err)
+		}
+		if _, exists := seenMatched[projectID]; !exists {
+			seenMatched[projectID] = struct{}{}
+			matchedProjectIDs = append(matchedProjectIDs, projectID)
+		}
+	}
+	sort.Slice(matchedProjectIDs, func(i, j int) bool { return matchedProjectIDs[i] < matchedProjectIDs[j] })
 
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	for _, projectID := range matchedProjectIDs {
+		if err := serializeProjectWriteTx(ctx, tx, projectID); err != nil {
+			return nil, err
+		}
+	}
 
 	whereClause, args, err := s.getExportableProjectsSelectorTx(ctx, tx, mode)
 	if err != nil {
@@ -1513,6 +1622,7 @@ func (s *Store) importMergeUpdate(ctx context.Context, data *ExportData, mode Mo
 	}
 
 	// Process each project in import
+	processedProjectIDs := make([]int64, 0, len(data.Projects))
 	for _, pExport := range data.Projects {
 		// Validate required fields
 		if pExport.Slug == "" {
@@ -1542,6 +1652,9 @@ func (s *Store) importMergeUpdate(ctx context.Context, data *ExportData, mode Mo
 		if existingProjectID.Valid {
 			// Update existing project
 			projectID = existingProjectID.Int64
+			if err := validatePriorityReplacementTx(ctx, tx, projectID, pExport); err != nil {
+				return nil, err
+			}
 
 			nowMs := time.Now().UTC().UnixMilli()
 			image := pExport.Image
@@ -1554,15 +1667,19 @@ func (s *Store) importMergeUpdate(ctx context.Context, data *ExportData, mode Mo
 				dominantColor = "#888888"
 			}
 
-			// Update mutable fields (name, image, dominant_color, default_sprint_weeks, updated_at)
+			// Update mutable fields (name, image, dominant_color, default_sprint_weeks, sprints_enabled, updated_at)
 			defaultSprintWeeks := 2
 			if pExport.DefaultSprintWeeks == 1 || pExport.DefaultSprintWeeks == 2 {
 				defaultSprintWeeks = pExport.DefaultSprintWeeks
 			}
+			sprintsEnabled := true
+			if pExport.SprintsEnabled != nil {
+				sprintsEnabled = *pExport.SprintsEnabled
+			}
 			_, err = tx.ExecContext(ctx, `
-				UPDATE projects SET name = ?, image = ?, dominant_color = ?, default_sprint_weeks = ?, updated_at = ?
+				UPDATE projects SET name = ?, image = ?, dominant_color = ?, default_sprint_weeks = ?, sprints_enabled = ?, updated_at = ?
 				WHERE id = ?`,
-				pExport.Name, image, dominantColor, defaultSprintWeeks, nowMs, projectID)
+				pExport.Name, image, dominantColor, defaultSprintWeeks, boolToInt(sprintsEnabled), nowMs, projectID)
 			if err != nil {
 				return nil, fmt.Errorf("update project: %w", err)
 			}
@@ -1577,14 +1694,8 @@ func (s *Store) importMergeUpdate(ctx context.Context, data *ExportData, mode Mo
 					return nil, fmt.Errorf("import workflow columns for project %q: %w", pExport.Name, err)
 				}
 			}
-
-			// Priority tiers: custom from export or leave as-is
-			if len(pExport.PriorityTiers) > 0 {
-				if err := s.deleteProjectPrioritiesExec(ctx, tx, projectID); err != nil {
-					return nil, fmt.Errorf("clear priority tiers for project %q: %w", pExport.Name, err)
-				}
-				tiers := priorityTiersFromExport(pExport.PriorityTiers)
-				if err := s.insertPriorityTiersExec(ctx, tx, projectID, tiers); err != nil {
+			if pExport.PriorityTiersPresent {
+				if err := s.replaceProjectPriorityTiersFromExport(ctx, tx, projectID, pExport); err != nil {
 					return nil, fmt.Errorf("import priority tiers for project %q: %w", pExport.Name, err)
 				}
 			}
@@ -1687,10 +1798,14 @@ func (s *Store) importMergeUpdate(ctx context.Context, data *ExportData, mode Mo
 			if pExport.DefaultSprintWeeks == 1 || pExport.DefaultSprintWeeks == 2 {
 				defaultSprintWeeks = pExport.DefaultSprintWeeks
 			}
+			sprintsEnabled := true
+			if pExport.SprintsEnabled != nil {
+				sprintsEnabled = *pExport.SprintsEnabled
+			}
 			res, err := tx.ExecContext(ctx, `
-				INSERT INTO projects(name, image, dominant_color, slug, estimation_mode, default_sprint_weeks, owner_user_id, creator_user_id, last_activity_at, expires_at, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				pExport.Name, image, dominantColor, slug, EstimationModeModifiedFibonacci, defaultSprintWeeks, ownerUserID, creatorUserID, nowMs, expiresAtMs, createdAtMs, updatedAtMs)
+				INSERT INTO projects(name, image, dominant_color, slug, estimation_mode, default_sprint_weeks, sprints_enabled, owner_user_id, creator_user_id, last_activity_at, expires_at, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				pExport.Name, image, dominantColor, slug, EstimationModeModifiedFibonacci, defaultSprintWeeks, boolToInt(sprintsEnabled), ownerUserID, creatorUserID, nowMs, expiresAtMs, createdAtMs, updatedAtMs)
 			if err != nil {
 				return nil, fmt.Errorf("insert project: %w", err)
 			}
@@ -1722,24 +1837,13 @@ func (s *Store) importMergeUpdate(ctx context.Context, data *ExportData, mode Mo
 					return nil, fmt.Errorf("ensure workflow columns for project %q: %w", pExport.Name, err)
 				}
 			}
-
-			// Priority tiers: custom from export or default
-			if len(pExport.PriorityTiers) > 0 {
-				if err := s.deleteProjectPrioritiesExec(ctx, tx, projectID); err != nil {
-					return nil, fmt.Errorf("clear priority tiers for project %q: %w", pExport.Name, err)
-				}
-				tiers := priorityTiersFromExport(pExport.PriorityTiers)
-				if err := s.insertPriorityTiersExec(ctx, tx, projectID, tiers); err != nil {
-					return nil, fmt.Errorf("import priority tiers for project %q: %w", pExport.Name, err)
-				}
-			} else {
-				if err := s.ensureDefaultPriorityTiersExec(ctx, tx, projectID); err != nil {
-					return nil, fmt.Errorf("ensure priority tiers for project %q: %w", pExport.Name, err)
-				}
+			if err := s.replaceProjectPriorityTiersFromExport(ctx, tx, projectID, pExport); err != nil {
+				return nil, fmt.Errorf("import priority tiers for project %q: %w", pExport.Name, err)
 			}
 
 			result.Created++
 		}
+		processedProjectIDs = append(processedProjectIDs, projectID)
 
 		sprintIDByNumber, err := insertSprintsForImport(ctx, tx, projectID, pExport.Sprints)
 		if err != nil {
@@ -1793,26 +1897,29 @@ func (s *Store) importMergeUpdate(ctx context.Context, data *ExportData, mode Mo
 					sprintIDForSQL = id
 				}
 			}
-			priorityKeyVal, priorityWarned := resolveImportPriorityKey(ctx, tx, projectID, tExport.PriorityKey)
-			if priorityWarned {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("Unknown priority %q for todo %q, preserving existing priority", *tExport.PriorityKey, tExport.Title))
+			priorityForSQL := priorityKeyForInsert(tExport)
+			if key, ok := priorityForSQL.(string); ok {
+				if _, err := validateProjectPriorityKeyTx(ctx, tx, projectID, key); err != nil {
+					return nil, err
+				}
 			}
 
 			if existingTodoID.Valid {
-				// Update existing todo - mutable fields; set assignee/priority only when backup has one and it
-				// resolves (otherwise preserve existing) by building the SET clause dynamically.
+				// Assignee and priority are patch-like fields in merge mode:
+				// unresolved/absent assignee preserves, while priority additionally
+				// distinguishes absent (preserve) from explicit null (clear).
 				setClauses := []string{"title = ?", "body = ?", "column_key = ?", "rank = ?", "estimation_points = ?", "sprint_id = ?", "updated_at = ?", "done_at = ?"}
-				args := []any{tExport.Title, tExport.Body, columnKey, tExport.Rank, estimationPoints, sprintIDForSQL, updatedAtMs, doneAtMs}
+				updateArgs := []any{tExport.Title, tExport.Body, columnKey, tExport.Rank, estimationPoints, sprintIDForSQL, updatedAtMs, doneAtMs}
 				if assigneeVal != nil {
 					setClauses = append(setClauses, "assignee_user_id = ?")
-					args = append(args, *assigneeVal)
+					updateArgs = append(updateArgs, *assigneeVal)
 				}
-				if priorityKeyVal != nil {
+				if tExport.PriorityKeyPresent {
 					setClauses = append(setClauses, "priority_key = ?")
-					args = append(args, *priorityKeyVal)
+					updateArgs = append(updateArgs, priorityForSQL)
 				}
-				args = append(args, existingTodoID.Int64)
-				_, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE todos SET %s WHERE id = ?`, strings.Join(setClauses, ", ")), args...)
+				updateArgs = append(updateArgs, existingTodoID.Int64)
+				_, err = tx.ExecContext(ctx, fmt.Sprintf("UPDATE todos SET %s WHERE id = ?", strings.Join(setClauses, ", ")), updateArgs...)
 				if err != nil {
 					return nil, fmt.Errorf("update todo: %w", err)
 				}
@@ -1845,14 +1952,10 @@ func (s *Store) importMergeUpdate(ctx context.Context, data *ExportData, mode Mo
 				}
 
 				doneAtForInsert := resolveImportDoneAt(tExport.DoneAt, status, updatedAtMs)
-				var priorityKeyForSQLNew any
-				if priorityKeyVal != nil {
-					priorityKeyForSQLNew = *priorityKeyVal
-				}
 				_, err = tx.ExecContext(ctx, `
 					INSERT INTO todos(project_id, local_id, title, body, column_key, rank, estimation_points, assignee_user_id, sprint_id, priority_key, created_at, updated_at, done_at)
 					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					projectID, tExport.LocalID, tExport.Title, tExport.Body, columnKey, tExport.Rank, estimationPoints, assigneeForSQLNew, sprintIDForSQL, priorityKeyForSQLNew, createdAtMs, updatedAtMs, doneAtForInsert)
+					projectID, tExport.LocalID, tExport.Title, tExport.Body, columnKey, tExport.Rank, estimationPoints, assigneeForSQLNew, sprintIDForSQL, priorityForSQL, createdAtMs, updatedAtMs, doneAtForInsert)
 				if err != nil {
 					if strings.Contains(err.Error(), "UNIQUE constraint failed: todos.project_id, todos.local_id") {
 						// Still collided, regenerate
@@ -1862,7 +1965,7 @@ func (s *Store) importMergeUpdate(ctx context.Context, data *ExportData, mode Mo
 						_, err = tx.ExecContext(ctx, `
 							INSERT INTO todos(project_id, local_id, title, body, column_key, rank, estimation_points, assignee_user_id, sprint_id, priority_key, created_at, updated_at, done_at)
 							VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-							projectID, tExport.LocalID, tExport.Title, tExport.Body, columnKey, tExport.Rank, estimationPoints, assigneeForSQLNew, sprintIDForSQL, priorityKeyForSQLNew, createdAtMs, updatedAtMs, doneAtForInsert)
+							projectID, tExport.LocalID, tExport.Title, tExport.Body, columnKey, tExport.Rank, estimationPoints, assigneeForSQLNew, sprintIDForSQL, priorityForSQL, createdAtMs, updatedAtMs, doneAtForInsert)
 						if err != nil {
 							return nil, fmt.Errorf("insert todo with regenerated local_id: %w", err)
 						}
@@ -1914,6 +2017,11 @@ func (s *Store) importMergeUpdate(ctx context.Context, data *ExportData, mode Mo
 		}
 	}
 
+	for _, projectID := range processedProjectIDs {
+		if err := assertProjectPriorityIntegrityTx(ctx, tx, projectID); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
@@ -2032,10 +2140,14 @@ func (s *Store) importCreateCopy(ctx context.Context, data *ExportData, mode Mod
 		if pExport.DefaultSprintWeeks == 1 || pExport.DefaultSprintWeeks == 2 {
 			defaultSprintWeeks = pExport.DefaultSprintWeeks
 		}
+		sprintsEnabled := true
+		if pExport.SprintsEnabled != nil {
+			sprintsEnabled = *pExport.SprintsEnabled
+		}
 		res, err := tx.ExecContext(ctx, `
-			INSERT INTO projects(name, image, dominant_color, slug, estimation_mode, default_sprint_weeks, owner_user_id, creator_user_id, last_activity_at, expires_at, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			pExport.Name, image, dominantColor, slug, EstimationModeModifiedFibonacci, defaultSprintWeeks, ownerUserID, creatorUserID, nowMs, expiresAtMs, createdAtMs, updatedAtMs)
+			INSERT INTO projects(name, image, dominant_color, slug, estimation_mode, default_sprint_weeks, sprints_enabled, owner_user_id, creator_user_id, last_activity_at, expires_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			pExport.Name, image, dominantColor, slug, EstimationModeModifiedFibonacci, defaultSprintWeeks, boolToInt(sprintsEnabled), ownerUserID, creatorUserID, nowMs, expiresAtMs, createdAtMs, updatedAtMs)
 		if err != nil {
 			return nil, fmt.Errorf("insert project: %w", err)
 		}
@@ -2067,20 +2179,8 @@ func (s *Store) importCreateCopy(ctx context.Context, data *ExportData, mode Mod
 				return nil, fmt.Errorf("ensure workflow columns for project %q: %w", pExport.Name, err)
 			}
 		}
-
-		// Priority tiers: custom from export or default
-		if len(pExport.PriorityTiers) > 0 {
-			if err := s.deleteProjectPrioritiesExec(ctx, tx, newProjectID); err != nil {
-				return nil, fmt.Errorf("clear priority tiers for project %q: %w", pExport.Name, err)
-			}
-			tiers := priorityTiersFromExport(pExport.PriorityTiers)
-			if err := s.insertPriorityTiersExec(ctx, tx, newProjectID, tiers); err != nil {
-				return nil, fmt.Errorf("import priority tiers for project %q: %w", pExport.Name, err)
-			}
-		} else {
-			if err := s.ensureDefaultPriorityTiersExec(ctx, tx, newProjectID); err != nil {
-				return nil, fmt.Errorf("ensure priority tiers for project %q: %w", pExport.Name, err)
-			}
+		if err := s.replaceProjectPriorityTiersFromExport(ctx, tx, newProjectID, pExport); err != nil {
+			return nil, fmt.Errorf("import priority tiers for project %q: %w", pExport.Name, err)
 		}
 
 		projectIDMap[pExport.Slug] = newProjectID
@@ -2151,20 +2251,18 @@ func (s *Store) importCreateCopy(ctx context.Context, data *ExportData, mode Mod
 					sprintIDForSQL = id
 				}
 			}
-			priorityKeyVal, priorityWarned := resolveImportPriorityKey(ctx, tx, newProjectID, tExport.PriorityKey)
-			if priorityWarned {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("Unknown priority %q for todo %q, dropping priority", *tExport.PriorityKey, tExport.Title))
-			}
-			var priorityKeyForSQL any
-			if priorityKeyVal != nil {
-				priorityKeyForSQL = *priorityKeyVal
+			priorityForSQL := priorityKeyForInsert(tExport)
+			if key, ok := priorityForSQL.(string); ok {
+				if _, err := validateProjectPriorityKeyTx(ctx, tx, newProjectID, key); err != nil {
+					return nil, err
+				}
 			}
 
 			// Insert todo with remapped project_id, preserving localId (schema uses column_key, not status)
 			_, err = tx.ExecContext(ctx, `
 				INSERT INTO todos(project_id, local_id, title, body, column_key, rank, estimation_points, assignee_user_id, sprint_id, priority_key, created_at, updated_at, done_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				newProjectID, localID, tExport.Title, tExport.Body, columnKey, tExport.Rank, estimationPoints, assigneeForSQL, sprintIDForSQL, priorityKeyForSQL, createdAtMs, updatedAtMs, doneAtForInsert)
+				newProjectID, localID, tExport.Title, tExport.Body, columnKey, tExport.Rank, estimationPoints, assigneeForSQL, sprintIDForSQL, priorityForSQL, createdAtMs, updatedAtMs, doneAtForInsert)
 			if err != nil {
 				return nil, fmt.Errorf("insert todo: %w", err)
 			}
