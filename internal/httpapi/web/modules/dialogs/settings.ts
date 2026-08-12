@@ -4,12 +4,24 @@ import { fetchProjectMembers } from '../members-cache.js';
 import { escapeHTML, showToast, getAppVersion, showConfirmDialog, confirmDelete, isAnonymousBoard, renderUserAvatar, processImageFile, renderAvatarContent, sanitizeHexColor } from '../utils.js';
 import { getStoredTheme, handleThemeChange, THEME_SYSTEM, THEME_DARK, THEME_LIGHT } from '../theme.js';
 import { getStoredWallpaperState, setWallpaperOff, setWallpaperColor, uploadWallpaperImage } from '../wallpaper.js';
+import {
+  CARDS_PER_LANE_ALLOWED,
+  CARDS_PER_LANE_PREFERENCE_KEY,
+  getDefaultCardsPerLane,
+  setDefaultCardsPerLane,
+  invalidateBoard,
+  usePreferenceLimitOnNextBoardRequest,
+} from '../orchestration/board-refresh.js';
+import { clearBoardPrefetchCache } from '../views/board-prefetch-cache.js';
 import { processWallpaperFileForUpload } from '../utils.js';
 import { 
   getSlug, 
   getTag, 
   getSearch,
   getSprintIdFromUrl,
+  getAssigneeFromUrl,
+  getSortFromUrl,
+  getPriorityFromUrl,
   getBoard,
   getProjectId, 
   getProjects, 
@@ -71,6 +83,11 @@ import {
 } from '../core/assignmentNotify.js';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '../core/push.js';
 import { getVoiceFlowEnabledPreference, setVoiceFlowEnabledPreference } from '../core/voiceflow-preferences.js';
+import {
+  getWrapLanesPreference,
+  setWrapLanesPreference,
+  syncOpenBoardWrapLanesClass,
+} from '../core/wrap-lanes-preferences.js';
 import { getEmailNotifyViewState, setEmailNotifyPref, type EmailNotifyCategory } from '../core/email-notify-preferences.js';
 import {
   bindWorkflowTabInteractions,
@@ -80,6 +97,15 @@ import {
   loadWorkflowTabContent,
   resetWorkflowDraftToBaseline,
 } from './settings-workflow.js';
+import {
+  bindPriorityTabInteractions,
+  clearPriorityDraftState,
+  invalidatePriorityTierCountsCache,
+  isPriorityDraftDirty,
+  loadPriorityTabContent,
+  resetPriorityDraftToBaseline,
+  syncPriorityLocaleState,
+} from './settings-priorities.js';
 import {
   bindTagTabInteractions,
   invalidateTagsCache as invalidateTagSettingsCache,
@@ -183,6 +209,19 @@ async function switchSettingsTab(tabName: string): Promise<void> {
   if (tabName === "workflow") {
     invalidateWorkflowLaneCountsCache();
     clearWorkflowDraftState();
+  }
+  if (getSettingsActiveTab() === "priorities" && isPriorityDraftDirty()) {
+    const discard = await showConfirmDialog(
+      t('settings.priorities.unsavedConfirm.message'),
+      t('settings.priorities.unsavedConfirm.title'),
+      t('settings.priorities.unsavedConfirm.confirm')
+    );
+    if (!discard) return;
+    resetPriorityDraftToBaseline();
+  }
+  if (tabName === "priorities") {
+    invalidatePriorityTierCountsCache();
+    clearPriorityDraftState();
   }
   setSettingsActiveTab(tabName);
   await renderSettingsModal();
@@ -421,6 +460,12 @@ function applySettingsLocaleToOpenDialog(): void {
   if (activeTab === "workflow") {
     hydrateI18n(tabContentEl);
     syncWorkflowLocaleState(tabContentEl);
+    return;
+  }
+
+  if (activeTab === "priorities") {
+    hydrateI18n(tabContentEl);
+    syncPriorityLocaleState(tabContentEl);
     return;
   }
 
@@ -1320,10 +1365,12 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
   const myMember = currentUser ? boardMembers.find((m: any) => m.userId === currentUser.id) : null;
   const showSprintsTab = !!slug && hasProjectAccess && myMember?.role === "maintainer";
   const showWorkflowTab = !!slug && hasProjectAccess && myMember?.role === "maintainer";
+  const showPrioritiesTab = !!slug && hasProjectAccess && myMember?.role === "maintainer";
 
   // Charts tab only applies in durable project board view (not Dashboard/Projects/Temporary Boards, not anonymous mode, not temporary boards)
   const board = getBoard();
   const isTemporaryBoard = !!(board?.project?.expiresAt);
+  const sprintsEnabled = board?.project?.sprintsEnabled !== false;
   const showChartsTab =
     !!slug &&
     hasProjectAccess &&
@@ -1344,7 +1391,9 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
   } else if (!showChartsTab && getSettingsActiveTab() === "charts") {
     setSettingsActiveTab(hasProjectAccess ? "tag-colors" : "customization");
   } else if (!showWorkflowTab && getSettingsActiveTab() === "workflow") {
-    setSettingsActiveTab(hasProjectAccess ? "tag-colors" : "customization");
+	setSettingsActiveTab(hasProjectAccess ? "tag-colors" : "customization");
+  } else if (!showPrioritiesTab && getSettingsActiveTab() === "priorities") {
+	setSettingsActiveTab(hasProjectAccess ? "tag-colors" : "customization");
   } else if (getSettingsActiveTab() === "voiceflow") {
     setSettingsActiveTab("customization");
   }
@@ -1381,11 +1430,12 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
       if (activeTab === "charts") {
         // Fetch sprints for burndown navigation
         const slug = getSlug();
-        if (!slug) {
+        if (!slug || !sprintsEnabled) {
           cachedSprintsForCharts = null;
           cachedSprintsForChartsSlug = null;
+          burndownSprintIndex = 0;
         }
-        if (slug && (cachedSprintsForCharts === null || cachedSprintsForChartsSlug !== slug)) {
+        if (slug && sprintsEnabled && (cachedSprintsForCharts === null || cachedSprintsForChartsSlug !== slug)) {
           try {
             const sprintsRes = await apiFetch<{ sprints?: { id: number; name: string; plannedStartAt: number; plannedEndAt: number; state?: string }[] } | null>(`/api/board/${slug}/sprints`);
             const rawSprints = normalizeSprints(sprintsRes);
@@ -1400,7 +1450,7 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
           }
         }
         // When a sprint is selected in board view, use sprint-scoped burndown endpoint
-        const sprints = slug ? (cachedSprintsForCharts ?? []) : [];
+        const sprints = slug && sprintsEnabled ? (cachedSprintsForCharts ?? []) : [];
         const burndownSprintIndexClamped = sprints.length > 0 ? Math.min(burndownSprintIndex, sprints.length - 1) : 0;
         const currentSprintForFetch = sprints.length > 0 ? sprints[burndownSprintIndexClamped] : null;
         const effectiveBurndownURL =
@@ -1599,6 +1649,30 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
     `
     : "";
 
+  const cardsPerLaneSectionHTML = `
+      <div class="settings-section">
+        <div class="settings-section__title" data-i18n-text="settings.customization.cardsPerLane.title">Cards per lane</div>
+        <div class="settings-section__description muted" data-i18n-text="settings.customization.cardsPerLane.description">Number of cards shown by default in each lane before "Load more" is needed.</div>
+        <label class="row" style="align-items:center;gap:10px;margin-top:10px;">
+          <select id="cardsPerLaneSelect" style="width:80px;" ${getUser() ? "" : "disabled"}>
+            ${CARDS_PER_LANE_ALLOWED.map((n) => `<option value="${n}"${getDefaultCardsPerLane() === n ? " selected" : ""}>${n}</option>`).join("")}
+          </select>
+        </label>
+        ${!getUser() ? `<p class="muted" style="margin-top:10px;font-size:13px;" data-i18n-text="settings.customization.cardsPerLane.signInHint">Sign in to save this preference.</p>` : ""}
+      </div>
+    `;
+
+  const wrapLanesSectionHTML = `
+      <div class="settings-section">
+        <div class="settings-section__title" data-i18n-text="settings.customization.wrapLanes.title">Wrap lanes into rows</div>
+        <div class="settings-section__description muted" data-i18n-text="settings.customization.wrapLanes.description">On wide screens, boards with more than five lanes split into two equal rows; a leftover odd lane sits alone on the next row.</div>
+        <label class="row" style="align-items:center;gap:8px;margin-top:10px;cursor:pointer;">
+          <input type="checkbox" id="wrapLanesToggle" ${getWrapLanesPreference() ? "checked" : ""} />
+          <span data-i18n-text="settings.customization.wrapLanes.toggleLabel">Wrap lanes into rows</span>
+        </label>
+      </div>
+    `;
+
   let pushPwaDisabledNoticeKey = "";
   let pushPwaDisabledNoticeText = "";
   if (!pushVapidServerReady) {
@@ -1701,6 +1775,8 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
         </div>
       </div>
       ${wallpaperSectionHTML}
+      ${cardsPerLaneSectionHTML}
+      ${wrapLanesSectionHTML}
       ${getAuthStatusAvailable() ? renderVoiceFlowCustomizationHTML() : ""}
       <div class="settings-section">
         <div class="settings-section__title" data-i18n-text="settings.customization.notifications.title">Desktop notifications</div>
@@ -1789,6 +1865,10 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
   if (showWorkflowTab && getSettingsActiveTab() === "workflow" && slug) {
     workflowHTML = loadWorkflowTabContent({ slug, rerender: () => renderSettingsModal() });
   }
+  let prioritiesHTML = "";
+  if (showPrioritiesTab && getSettingsActiveTab() === "priorities" && slug) {
+    prioritiesHTML = loadPriorityTabContent({ slug, rerender: () => renderSettingsModal() });
+  }
 
   destroyBurndownChart();
   contentEl.innerHTML = `
@@ -1797,13 +1877,14 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
       ${showUsersTab ? `<button class="settings-tab ${activeSettingsTab === "users" ? "settings-tab--active" : ""}" data-tab="users" data-i18n-text="settings.tabs.users">Users</button>` : ``}
       ${showSprintsTab ? `<button class="settings-tab ${activeSettingsTab === "sprints" ? "settings-tab--active" : ""}" data-tab="sprints" data-i18n-text="settings.tabs.sprints">Sprints</button>` : ``}
       ${showWorkflowTab ? `<button class="settings-tab ${activeSettingsTab === "workflow" ? "settings-tab--active" : ""}" data-tab="workflow" data-i18n-text="settings.tabs.workflow">Workflow</button>` : ``}
+      ${showPrioritiesTab ? `<button class="settings-tab ${activeSettingsTab === "priorities" ? "settings-tab--active" : ""}" data-tab="priorities" data-i18n-text="settings.tabs.priorities">Priorities</button>` : ``}
       <button class="settings-tab ${activeSettingsTab === "customization" ? "settings-tab--active" : ""}" data-tab="customization" data-i18n-text="settings.tabs.customization">Customization</button>
       <button class="settings-tab ${activeSettingsTab === "tag-colors" ? "settings-tab--active" : ""}" data-tab="tag-colors" data-i18n-text="settings.tabs.tagColors">Tag Colors</button>
       ${showChartsTab ? `<button class="settings-tab ${activeSettingsTab === "charts" ? "settings-tab--active" : ""}" data-tab="charts" data-i18n-text="settings.tabs.charts">Charts</button>` : ``}
       <button class="settings-tab ${activeSettingsTab === "backup" ? "settings-tab--active" : ""}" data-tab="backup" data-i18n-text="settings.tabs.backup">Backup</button>
     </div>
     <div class="settings-tab-content" id="settingsTabContent">
-      ${activeSettingsTab === "profile" ? profileHTML : activeSettingsTab === "users" ? usersHTML : activeSettingsTab === "sprints" ? sprintsHTML : activeSettingsTab === "workflow" ? workflowHTML : activeSettingsTab === "customization" ? customizationHTML : activeSettingsTab === "tag-colors" ? tagColorsContent : activeSettingsTab === "charts" ? chartsContent : activeSettingsTab === "backup" ? renderBackupTabHTML() : ""}
+      ${activeSettingsTab === "profile" ? profileHTML : activeSettingsTab === "users" ? usersHTML : activeSettingsTab === "sprints" ? sprintsHTML : activeSettingsTab === "workflow" ? workflowHTML : activeSettingsTab === "priorities" ? prioritiesHTML : activeSettingsTab === "customization" ? customizationHTML : activeSettingsTab === "tag-colors" ? tagColorsContent : activeSettingsTab === "charts" ? chartsContent : activeSettingsTab === "backup" ? renderBackupTabHTML() : ""}
     </div>
   `;
 
@@ -1889,6 +1970,14 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
   const settingsDlg = settingsDialog as HTMLDialogElement | null;
   if (getSettingsActiveTab() === "workflow") {
     bindWorkflowTabInteractions({
+      signal,
+      settingsDialog: settingsDlg,
+      closeSettingsBtn,
+      rerender: () => renderSettingsModal(),
+    });
+  }
+  if (getSettingsActiveTab() === "priorities") {
+    bindPriorityTabInteractions({
       signal,
       settingsDialog: settingsDlg,
       closeSettingsBtn,
@@ -2099,23 +2188,55 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
       }, { signal });
     }
 
-    // Default board: project picker. Saving a selection enables the org setting.
+    // Default board: project picker and role picker. Saving a project
+    // selection enables the org setting; the role picker is only meaningful
+    // once a project is chosen, so it reads the currently selected project
+    // rather than requiring the admin to re-pick it.
     const defaultBoardSelect = document.getElementById("defaultBoardProjectSelect") as HTMLSelectElement | null;
+    const defaultBoardRoleSelect = document.getElementById("defaultBoardRoleSelect") as HTMLSelectElement | null;
+
+    let defaultBoardSaving = false;
+    const syncDefaultBoardRoleEnabled = () => {
+      if (!defaultBoardRoleSelect || !defaultBoardSelect) return;
+      const projectId = Number(defaultBoardSelect.value);
+      const hasProject = !!defaultBoardSelect.value && Number.isFinite(projectId) && projectId > 0;
+      defaultBoardRoleSelect.disabled = defaultBoardSaving || !hasProject;
+    };
+    const saveDefaultBoard = async () => {
+      if (defaultBoardSaving) return;
+      const projectId = Number(defaultBoardSelect?.value);
+      if (!defaultBoardSelect?.value || !Number.isFinite(projectId) || projectId <= 0) {
+        syncDefaultBoardRoleEnabled();
+        return;
+      }
+      const role = defaultBoardRoleSelect?.value || "viewer";
+
+      defaultBoardSaving = true;
+      if (defaultBoardSelect) defaultBoardSelect.disabled = true;
+      if (defaultBoardRoleSelect) defaultBoardRoleSelect.disabled = true;
+      try {
+        await apiFetch("/api/admin/settings/default-board", {
+          method: "PUT",
+          body: JSON.stringify({ projectId, role }),
+        });
+        showToast(t("settings.users.defaultBoard.toast.saved"));
+      } catch (err: any) {
+        showToast(apiErrorMessageOrRaw(err, { fallbackKey: "settings.users.defaultBoard.toast.saveFailed" }));
+      } finally {
+        defaultBoardSaving = false;
+      }
+      await renderSettingsModal();
+    };
+
     if (defaultBoardSelect) {
       defaultBoardSelect.addEventListener("change", async () => {
-        const projectId = Number(defaultBoardSelect.value);
-        if (!defaultBoardSelect.value || !Number.isFinite(projectId) || projectId <= 0) return;
-        try {
-          await apiFetch("/api/admin/settings/default-board", {
-            method: "PUT",
-            body: JSON.stringify({ projectId }),
-          });
-          showToast(t("settings.users.defaultBoard.toast.saved"));
-        } catch (err: any) {
-          showToast(apiErrorMessageOrRaw(err, { fallbackKey: "settings.users.defaultBoard.toast.saveFailed" }));
-        }
-        await renderSettingsModal();
+        syncDefaultBoardRoleEnabled();
+        await saveDefaultBoard();
       }, { signal });
+      syncDefaultBoardRoleEnabled();
+    }
+    if (defaultBoardRoleSelect) {
+      defaultBoardRoleSelect.addEventListener("change", saveDefaultBoard, { signal });
     }
   }
 
@@ -2134,6 +2255,61 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
       handleThemeChange((e.target as HTMLInputElement).value);
     }, { signal });
   });
+
+  // Setup cards-per-lane default
+  const cardsPerLaneSelect = document.getElementById("cardsPerLaneSelect") as HTMLSelectElement | null;
+  if (cardsPerLaneSelect && getUser()) {
+    let cardsPerLaneSaving = false;
+    cardsPerLaneSelect.addEventListener("change", async () => {
+      if (cardsPerLaneSaving) return;
+      const previous = getDefaultCardsPerLane();
+      const parsed = parseInt(cardsPerLaneSelect.value, 10);
+      const next = Number.isFinite(parsed) ? parsed : previous;
+      if (next === previous) {
+        cardsPerLaneSelect.value = String(previous);
+        return;
+      }
+
+      cardsPerLaneSaving = true;
+      cardsPerLaneSelect.disabled = true;
+      let saved = false;
+      try {
+        await apiFetch("/api/user/preferences", {
+          method: "PUT",
+          body: JSON.stringify({ key: CARDS_PER_LANE_PREFERENCE_KEY, value: String(next) }),
+        });
+        setDefaultCardsPerLane(next);
+        saved = true;
+        clearBoardPrefetchCache();
+        // Drop stale projects-list prefetch from history so F5 cannot resurrect a
+        // board payload fetched under the previous limitPerLane.
+        if ((history.state as { boardData?: unknown } | null)?.boardData) {
+          history.replaceState({}, "", window.location.pathname + window.location.search + window.location.hash);
+        }
+        // Apply immediately on the open board (and on next F5 via preference hydration).
+        const slug = getSlug();
+        if (slug) {
+          usePreferenceLimitOnNextBoardRequest();
+          void invalidateBoard(
+            slug,
+            getTag(),
+            getSearch(),
+            getSprintIdFromUrl(),
+            getAssigneeFromUrl(),
+            getSortFromUrl(),
+            getPriorityFromUrl(),
+          );
+        }
+        showToast(t("settings.customization.cardsPerLane.toast.updated"));
+      } catch (err: any) {
+        showToast(apiErrorMessageOrRaw(err, { fallbackKey: "settings.customization.cardsPerLane.toast.updateFailed" }));
+      } finally {
+        cardsPerLaneSaving = false;
+        cardsPerLaneSelect.disabled = false;
+        cardsPerLaneSelect.value = String(saved ? getDefaultCardsPerLane() : previous);
+      }
+    }, { signal });
+  }
 
   function syncWallpaperRadiosFromState(): void {
     const st = getStoredWallpaperState();
@@ -2247,6 +2423,18 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
         () => {
           setVoiceFlowEnabledPreference(voiceFlowEnabledToggle.checked);
           emit("voiceflow:enabled-changed", voiceFlowEnabledToggle.checked);
+        },
+        { signal }
+      );
+    }
+
+    const wrapLanesToggle = document.getElementById("wrapLanesToggle") as HTMLInputElement | null;
+    if (wrapLanesToggle) {
+      wrapLanesToggle.addEventListener(
+        "change",
+        () => {
+          setWrapLanesPreference(wrapLanesToggle.checked);
+          syncOpenBoardWrapLanesClass();
         },
         { signal }
       );
@@ -2408,15 +2596,22 @@ export async function renderSettingsModal(options?: { skipProfileRefetch?: boole
   });
 }
 
+// Roles an admin may pick as the auto-enrollment level for the default
+// board. Mirrors the backend's IsValidProjectRole set (owner/editor are
+// deprecated aliases, never offered here).
+const DEFAULT_BOARD_ROLES = ["viewer", "contributor", "maintainer"];
+
 // Renders the org-wide "default board for new users" admin control shown at the
 // top of the Users tab. The enable toggle maps onto the existing admin API:
-// disabled == unset (`customized:false`), enabled == a saved `projectId`.
-// Turning the toggle off clears via DELETE; picking a project saves via PUT.
-// This never enrolls existing users -- it only seeds users created afterward.
+// disabled == unset (`customized:false`), enabled == a saved `projectId` (and
+// `role`, defaulting to viewer server-side when omitted). Turning the toggle
+// off clears via DELETE; picking a project or role saves via PUT. This never
+// enrolls existing users -- it only seeds users created afterward.
 function renderDefaultBoardSection(setting: any, projects: any[]): string {
   const loadFailed = !setting;
   const customized = !!(setting && setting.customized);
   const configuredId = customized && typeof setting.projectId === "number" ? setting.projectId : null;
+  const configuredRole = DEFAULT_BOARD_ROLES.includes(setting?.role) ? setting.role : "viewer";
 
   // Only durable projects the requester maintains are valid write targets
   // (mirrors the store-side rule); temporary/anonymous boards are excluded.
@@ -2439,6 +2634,10 @@ function renderDefaultBoardSection(setting: any, projects: any[]): string {
 
   const hasEligible = eligible.length > 0 || extraOptionHTML !== "";
 
+  const roleOptionsHTML = DEFAULT_BOARD_ROLES.map((role) =>
+    `<option value="${role}" ${role === configuredRole ? "selected" : ""}>${escapeHTML(t(`board.members.role.${role}`))}</option>`
+  ).join("");
+
   const controlsHTML = loadFailed
     ? `<p class="muted" style="margin:8px 0;font-size:13px;" data-i18n-text="settings.users.defaultBoard.loadFailed">Could not load the default board setting. Reload the page to try again.</p>`
     : `
@@ -2455,13 +2654,19 @@ function renderDefaultBoardSection(setting: any, projects: any[]): string {
               ${extraOptionHTML}
               ${optionsHTML}
             </select>
+          </label>
+          <label class="field" style="display:block;margin-top:10px;">
+            <span class="muted" data-i18n-text="settings.users.defaultBoard.roleLabel">Role for new members</span>
+            <select id="defaultBoardRoleSelect" class="input" style="display:block;margin-top:4px;"${configuredId == null ? " disabled" : ""}>
+              ${roleOptionsHTML}
+            </select>
           </label>` : `<p class="muted" style="margin:0;font-size:13px;" data-i18n-text="settings.users.defaultBoard.noEligibleProjects">You have no durable boards you maintain to use as a default.</p>`}
         </div>`;
 
   return `
       <div class="settings-section">
         <div class="settings-section__title" data-i18n-text="settings.users.defaultBoard.title">Default board for new users</div>
-        <div class="settings-section__description muted" data-i18n-text="settings.users.defaultBoard.description">New users are auto-enrolled as viewers on this board when their account is created. Changing or turning this off never affects existing users.</div>
+        <div class="settings-section__description muted" data-i18n-text="settings.users.defaultBoard.description">New users are auto-enrolled on this board at the selected role when their account is created. Changing or turning this off never affects existing users.</div>
         ${controlsHTML}
       </div>
   `;

@@ -1378,7 +1378,8 @@ html[data-wallpaper-active] #settingsDialog.dialog {
 .field__label[title],
 .chip[title],
 #searchInput[title],
-.card__points[title] {
+.card__points[title],
+.card__priority[title] {
   cursor: help;
 }
 
@@ -3303,7 +3304,7 @@ label:has(input[type="radio"][name="importMode"]:disabled) {
 
 .board {
   display: grid;
-  grid-template-columns: repeat(5, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   -moz-user-select: none;
@@ -3311,6 +3312,12 @@ label:has(input[type="radio"][name="importMode"]:disabled) {
   user-select: none;
   touch-action: manipulation;
   gap: var(--s-12);
+}
+
+@media (min-width: 1301px) {
+  .board.board--wrapped {
+    grid-template-columns: repeat(var(--board-wrap-cols), minmax(200px, 1fr));
+  }
 }
 
 .col {
@@ -4226,6 +4233,25 @@ label:has(input[type="radio"][name="importMode"]:disabled) {
   justify-content: center;
 }
 
+.card__priority {
+  flex-shrink: 0;
+  height: var(--s-20);
+  padding: 0 var(--s-8);
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: rgba(148, 163, 184, 0.18);
+  color: var(--text);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  line-height: calc(18px * var(--ui-scale));
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 
 .card__drag-handle {
   display: flex;
@@ -4727,6 +4753,26 @@ label:has(input[type="radio"][name="importMode"]:disabled) {
   font-style: italic;
 }
 
+/* Desktop/tablet: keep .no-results out of the auto-fit grid so empty-search
+   messaging cannot steal a lane track or compress columns. Mobile (≤620px)
+   keeps .no-results as a normal flex sibling of .board. */
+@media (min-width: 621px) {
+  .board {
+    position: relative;
+  }
+
+  .board > .no-results {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    pointer-events: none;
+  }
+}
+
 /* ============================================
    BURNDOWN CHART
    ============================================ */
@@ -5101,6 +5147,21 @@ label:has(input[type="radio"][name="importMode"]:disabled) {
 
 @media (max-width: 768px) {
   .settings-workflow-footer {
+    justify-content: center;
+  }
+}
+
+/* Settings → Priorities: draft actions */
+.settings-priorities-footer {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+@media (max-width: 768px) {
+  .settings-priorities-footer {
     justify-content: center;
   }
 }

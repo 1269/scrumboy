@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	boardapp "scrumboy/internal/application/board"
+	membershipapp "scrumboy/internal/application/membership"
 	"scrumboy/internal/projectcolor"
 	"scrumboy/internal/store"
 )
@@ -219,8 +221,15 @@ func (s *Server) handleProjectsProjectItem(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleProjectsProjectReads(w http.ResponseWriter, r *http.Request, rest []string, projectID int64) bool {
 	if len(rest) == 2 && rest[1] == "board" && r.Method == http.MethodGet {
+		// This is a supported compatibility endpoint. Its unpaged response is
+		// intentionally distinct from the preferred paged slug routes. Do not
+		// add deprecation or sunset signals without an approved API lifecycle
+		// policy and migration window.
 		ctx := s.requestContext(r)
-		pc, err := s.store.GetProjectContextForRead(ctx, projectID, s.storeMode())
+		prepared, err := s.boardReads.PrepareLegacy(ctx, boardapp.LegacyReadTarget{
+			ProjectID: projectID,
+			Mode:      s.storeMode(),
+		})
 		if err != nil {
 			writeStoreErr(w, err, true)
 			return true
@@ -235,7 +244,12 @@ func (s *Server) handleProjectsProjectReads(w http.ResponseWriter, r *http.Reque
 			writeValidationError(w, "invalid assignee", "invalid_assignee", map[string]any{"field": "assignee"})
 			return true
 		}
-		sprintFilter, err := s.parseSprintFilterFromQuery(r, projectID)
+		priorityFilter, err := s.parsePriorityFilterFromQuery(r)
+		if err != nil {
+			writeValidationError(w, "invalid priority", "invalid_priority", map[string]any{"field": "priority"})
+			return true
+		}
+		sprintFilter, err := s.parseSprintFilterFromQuery(r)
 		if err != nil {
 			writeValidationError(w, err.Error(), "invalid_sprint_id", map[string]any{"field": "sprintId"})
 			return true
@@ -245,12 +259,25 @@ func (s *Server) handleProjectsProjectReads(w http.ResponseWriter, r *http.Reque
 			writeValidationError(w, "invalid sort", "invalid_sort", map[string]any{"field": "sort"})
 			return true
 		}
-		project, tags, workflow, cols, err := s.store.GetBoard(ctx, &pc, tag, search, assigneeFilter, sprintFilter, sortOrder)
+		result, err := prepared.Read(boardapp.LegacyQuery{
+			TagFilter:      tag,
+			SearchFilter:   search,
+			AssigneeFilter: assigneeFilter,
+			PriorityFilter: priorityFilter,
+			SprintFilter:   sprintFilter,
+			SortOrder:      sortOrder,
+		})
 		if err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		writeJSON(w, http.StatusOK, boardToJSON(project, workflow, tags, cols))
+		writeJSON(w, http.StatusOK, boardToJSON(
+			result.Project,
+			result.Workflow,
+			result.Priorities,
+			result.Tags,
+			result.Columns,
+		))
 		return true
 	}
 
@@ -309,24 +336,27 @@ func (s *Server) handleProjectsProjectMembers(w http.ResponseWriter, r *http.Req
 			return true
 		}
 
-		userID, ok := store.UserIDFromContext(s.requestContext(r))
-		if !ok {
+		ctx := s.requestContext(r)
+		prepared, err := s.membershipMutations.Prepare(ctx, membershipapp.ResolvedRESTMutationTarget{
+			ProjectID: projectID,
+		})
+		if errors.Is(err, membershipapp.ErrActorRequired) {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
 			return true
 		}
-
-		if err := s.store.AddProjectMember(s.requestContext(r), userID, projectID, in.UserID, role); err != nil {
-			writeStoreErr(w, err, true)
+		if err != nil {
+			writeInternal(w, err)
 			return true
 		}
 
-		members, err := s.store.ListProjectMembers(s.requestContext(r), projectID, userID)
+		members, err := prepared.Add(membershipapp.AddCommand{
+			TargetUserID: in.UserID,
+			Role:         role,
+		})
 		if err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		s.emitMembersUpdated(r.Context(), projectID)
-		s.emitMembership(s.requestContext(r), projectID, in.UserID, "added")
 		writeJSON(w, http.StatusOK, projectMembersToJSON(members))
 		return true
 	}
@@ -338,24 +368,24 @@ func (s *Server) handleProjectsProjectMembers(w http.ResponseWriter, r *http.Req
 			return true
 		}
 
-		requesterID, ok := store.UserIDFromContext(s.requestContext(r))
-		if !ok {
+		ctx := s.requestContext(r)
+		prepared, err := s.membershipMutations.Prepare(ctx, membershipapp.ResolvedRESTMutationTarget{
+			ProjectID: projectID,
+		})
+		if errors.Is(err, membershipapp.ErrActorRequired) {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
 			return true
 		}
-
-		if err := s.store.RemoveProjectMember(s.requestContext(r), requesterID, projectID, targetUserID); err != nil {
-			writeStoreErr(w, err, true)
+		if err != nil {
+			writeInternal(w, err)
 			return true
 		}
 
-		members, err := s.store.ListProjectMembers(s.requestContext(r), projectID, requesterID)
+		members, err := prepared.Remove(membershipapp.RemoveCommand{TargetUserID: targetUserID})
 		if err != nil {
 			writeStoreErr(w, err, true)
 			return true
 		}
-		s.emitMembersUpdated(r.Context(), projectID)
-		s.emitMembership(s.requestContext(r), projectID, targetUserID, "removed")
 		writeJSON(w, http.StatusOK, projectMembersToJSON(members))
 		return true
 	}
@@ -377,12 +407,23 @@ func (s *Server) handleProjectsProjectMembers(w http.ResponseWriter, r *http.Req
 			writeValidationError(w, "invalid role", "invalid_role", map[string]any{"field": "role"})
 			return true
 		}
-		requesterID, ok := store.UserIDFromContext(s.requestContext(r))
-		if !ok {
+		ctx := s.requestContext(r)
+		prepared, err := s.membershipMutations.Prepare(ctx, membershipapp.ResolvedRESTMutationTarget{
+			ProjectID: projectID,
+		})
+		if errors.Is(err, membershipapp.ErrActorRequired) {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
 			return true
 		}
-		if err := s.store.UpdateProjectMemberRole(s.requestContext(r), requesterID, projectID, targetUserID, role); err != nil {
+		if err != nil {
+			writeInternal(w, err)
+			return true
+		}
+		members, err := prepared.UpdateRole(membershipapp.UpdateRoleCommand{
+			TargetUserID: targetUserID,
+			Role:         role,
+		})
+		if err != nil {
 			switch {
 			case errors.Is(err, store.ErrNotFound):
 				writeError(w, http.StatusNotFound, "NOT_FOUND", "not found", nil)
@@ -397,13 +438,6 @@ func (s *Server) handleProjectsProjectMembers(w http.ResponseWriter, r *http.Req
 			}
 			return true
 		}
-		members, err := s.store.ListProjectMembers(s.requestContext(r), projectID, requesterID)
-		if err != nil {
-			writeStoreErr(w, err, true)
-			return true
-		}
-		s.emitMembersUpdated(r.Context(), projectID)
-		s.emitMembership(s.requestContext(r), projectID, targetUserID, "role_changed")
 		writeJSON(w, http.StatusOK, projectMembersToJSON(members))
 		return true
 	}

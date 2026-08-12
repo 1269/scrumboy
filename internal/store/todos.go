@@ -15,8 +15,9 @@ type CreateTodoInput struct {
 	Tags             []string
 	ColumnKey        string
 	EstimationPoints *int64
-	SprintID         *int64 // NULL = backlog
-	AssigneeUserID   *int64 // NULL = unassigned
+	SprintID         *int64  // NULL = backlog
+	AssigneeUserID   *int64  // NULL = unassigned
+	PriorityKey      *string // NULL = no priority set
 	AfterID          *int64
 	BeforeID         *int64
 }
@@ -43,6 +44,10 @@ func (s *Store) CreateTodo(ctx context.Context, projectID int64, in CreateTodoIn
 		tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 		if err != nil {
 			return Todo{}, fmt.Errorf("begin create todo: %w", err)
+		}
+		if err := serializeProjectWriteTx(ctx, tx, projectID); err != nil {
+			_ = tx.Rollback()
+			return Todo{}, err
 		}
 
 		p, err := s.getProjectForWriteTx(ctx, tx, projectID, mode)
@@ -153,12 +158,6 @@ func (s *Store) CreateTodo(ctx context.Context, projectID int64, in CreateTodoIn
 			userIDPtr = &userID
 		}
 
-		// Write lock early (SQLite acquires write lock on first write in a deferred tx).
-		if _, err := tx.ExecContext(ctx, `UPDATE projects SET updated_at = updated_at WHERE id = ?`, projectID); err != nil {
-			_ = tx.Rollback()
-			return Todo{}, fmt.Errorf("lock project row: %w", err)
-		}
-
 		// Loud-fail if migration is incomplete (NULL local_id would defeat uniqueness).
 		var nullCount int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM todos WHERE project_id = ? AND local_id IS NULL`, projectID).Scan(&nullCount); err != nil {
@@ -185,6 +184,12 @@ func (s *Store) CreateTodo(ctx context.Context, projectID int64, in CreateTodoIn
 			_ = tx.Rollback()
 			return Todo{}, err
 		}
+		if in.PriorityKey != nil {
+			if _, err := validateProjectPriorityKeyTx(ctx, tx, projectID, *in.PriorityKey); err != nil {
+				_ = tx.Rollback()
+				return Todo{}, err
+			}
+		}
 		newRank, err := computeNewRank(ctx, tx, projectID, targetCol.Key, nil, in.AfterID, in.BeforeID)
 		if err != nil {
 			_ = tx.Rollback()
@@ -192,6 +197,10 @@ func (s *Store) CreateTodo(ctx context.Context, projectID int64, in CreateTodoIn
 		}
 
 		if in.SprintID != nil {
+			if err := lockProjectSprintsEnabledTx(ctx, tx, projectID); err != nil {
+				_ = tx.Rollback()
+				return Todo{}, err
+			}
 			var sprintProjectID int64
 			if err := tx.QueryRowContext(ctx, `SELECT project_id FROM sprints WHERE id = ?`, *in.SprintID).Scan(&sprintProjectID); err != nil {
 				_ = tx.Rollback()
@@ -224,10 +233,14 @@ func (s *Store) CreateTodo(ctx context.Context, projectID int64, in CreateTodoIn
 		if in.AssigneeUserID != nil {
 			assigneeArg = *in.AssigneeUserID
 		}
+		var priorityKeyArg any = nil
+		if in.PriorityKey != nil {
+			priorityKeyArg = *in.PriorityKey
+		}
 		res, err := tx.ExecContext(ctx, `
-INSERT INTO todos(project_id, local_id, title, body, column_key, rank, estimation_points, assignee_user_id, sprint_id, created_at, updated_at, done_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			projectID, localID, in.Title, in.Body, in.ColumnKey, newRank, estimationPoints, assigneeArg, sprintIDArg, nowMs, nowMs, doneAtArg,
+INSERT INTO todos(project_id, local_id, title, body, column_key, rank, estimation_points, assignee_user_id, sprint_id, priority_key, created_at, updated_at, done_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			projectID, localID, in.Title, in.Body, in.ColumnKey, newRank, estimationPoints, assigneeArg, sprintIDArg, priorityKeyArg, nowMs, nowMs, doneAtArg,
 		)
 		if err != nil {
 			// Retry on unique collision for (project_id, local_id).
@@ -287,6 +300,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			EstimationPoints: cloneInt64Ptr(in.EstimationPoints),
 			AssigneeUserID:   cloneInt64Ptr(in.AssigneeUserID),
 			SprintID:         cloneInt64Ptr(in.SprintID),
+			PriorityKey:      cloneStringPtr(in.PriorityKey),
 			Tags:             tags,
 			CreatedAt:        time.UnixMilli(nowMs).UTC(),
 			UpdatedAt:        time.UnixMilli(nowMs).UTC(),
@@ -308,13 +322,15 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 }
 
 type UpdateTodoInput struct {
-	Title            string
-	Body             string
-	Tags             []string
-	EstimationPoints *int64
-	AssigneeUserID   *int64
-	SprintID         *int64 // when nil, don't update; when non-nil, set to that sprint
-	ClearSprint      bool   // when true, set sprint_id to NULL (backlog); overrides SprintID
+	Title              string
+	Body               string
+	Tags               []string
+	EstimationPoints   *int64
+	AssigneeUserID     *int64
+	SprintID           *int64  // when nil, don't update; when non-nil, set to that sprint
+	ClearSprint        bool    // when true, set sprint_id to NULL (backlog); overrides SprintID
+	PriorityKey        *string // nil means clear when PriorityKeyPresent is true
+	PriorityKeyPresent bool    // false preserves the existing priority assignment
 }
 
 // resolveDoneAtForColumnTransition returns the value to write for done_at.
@@ -353,6 +369,24 @@ func cloneInt64Ptr(v *int64) *int64 {
 	return &c
 }
 
+func sameStringPtr(a, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func cloneStringPtr(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
+}
+
 func validateEstimationPoints(v *int64) error {
 	if v == nil {
 		return nil
@@ -371,6 +405,13 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 		return Todo{}, fmt.Errorf("begin update todo: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE projects
+		SET updated_at = updated_at
+		WHERE id = (SELECT project_id FROM todos WHERE id = ?)
+	`, todoID); err != nil {
+		return Todo{}, fmt.Errorf("serialize todo project write: %w", err)
+	}
 
 	existing, err := getTodoTx(ctx, tx, todoID)
 	if err != nil {
@@ -495,11 +536,17 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 		}
 	}
 
+	sprintAssignmentChanged := in.SprintID != nil && !sameInt64Ptr(existing.SprintID, in.SprintID)
 	if in.ClearSprint || in.SprintID != nil {
 		if !actorRole.HasMinimumRole(RoleMaintainer) {
 			return Todo{}, ErrUnauthorized
 		}
 		if in.SprintID != nil {
+			if sprintAssignmentChanged {
+				if err := lockProjectSprintsEnabledTx(ctx, tx, existing.ProjectID); err != nil {
+					return Todo{}, err
+				}
+			}
 			var sprintProjectID int64
 			if err := tx.QueryRowContext(ctx, `SELECT project_id FROM sprints WHERE id = ?`, *in.SprintID).Scan(&sprintProjectID); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
@@ -510,6 +557,16 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 			if sprintProjectID != existing.ProjectID {
 				return Todo{}, fmt.Errorf("%w: sprint does not belong to project", ErrValidation)
 			}
+		}
+	}
+
+	effectivePriorityKey := cloneStringPtr(existing.PriorityKey)
+	if in.PriorityKeyPresent {
+		effectivePriorityKey = cloneStringPtr(in.PriorityKey)
+	}
+	if effectivePriorityKey != nil {
+		if _, err := validateProjectPriorityKeyTx(ctx, tx, existing.ProjectID, *effectivePriorityKey); err != nil {
+			return Todo{}, err
 		}
 	}
 
@@ -552,22 +609,26 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 	if in.EstimationPoints != nil {
 		estimationPoints = *in.EstimationPoints
 	}
+	var priorityKeyValue any
+	if effectivePriorityKey != nil {
+		priorityKeyValue = *effectivePriorityKey
+	}
 
 	nowMs := time.Now().UTC().UnixMilli()
 	if updateSprint {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE todos
-			SET title = ?, body = ?, assignee_user_id = ?, estimation_points = ?, sprint_id = ?, updated_at = ?
+			SET title = ?, body = ?, assignee_user_id = ?, estimation_points = ?, sprint_id = ?, priority_key = ?, updated_at = ?
 			WHERE id = ?
-		`, in.Title, in.Body, assigneeValue, estimationPoints, sprintIDValue, nowMs, todoID); err != nil {
+		`, in.Title, in.Body, assigneeValue, estimationPoints, sprintIDValue, priorityKeyValue, nowMs, todoID); err != nil {
 			return Todo{}, fmt.Errorf("update todo: %w", err)
 		}
 	} else {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE todos
-			SET title = ?, body = ?, assignee_user_id = ?, estimation_points = ?, updated_at = ?
+			SET title = ?, body = ?, assignee_user_id = ?, estimation_points = ?, priority_key = ?, updated_at = ?
 			WHERE id = ?
-		`, in.Title, in.Body, assigneeValue, estimationPoints, nowMs, todoID); err != nil {
+		`, in.Title, in.Body, assigneeValue, estimationPoints, priorityKeyValue, nowMs, todoID); err != nil {
 			return Todo{}, fmt.Errorf("update todo: %w", err)
 		}
 	}
@@ -635,6 +696,9 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 	if !sameInt64Ptr(existing.EstimationPoints, in.EstimationPoints) {
 		changedFields = append(changedFields, "estimation")
 	}
+	if !sameStringPtr(existing.PriorityKey, effectivePriorityKey) {
+		changedFields = append(changedFields, "priority")
+	}
 	existingTags := make(map[string]struct{}, len(existing.Tags))
 	for _, t := range existing.Tags {
 		existingTags[t] = struct{}{}
@@ -672,7 +736,7 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 				meta["tags_removed"] = tagsRemoved
 			}
 		}
-		if containsString(changedFields, "sprint") || containsString(changedFields, "estimation") {
+		if containsString(changedFields, "sprint") || containsString(changedFields, "estimation") || containsString(changedFields, "priority") {
 			before := make(map[string]any)
 			after := make(map[string]any)
 			if containsString(changedFields, "sprint") {
@@ -682,6 +746,10 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 			if containsString(changedFields, "estimation") {
 				before["estimation_points"] = existing.EstimationPoints
 				after["estimation_points"] = in.EstimationPoints
+			}
+			if containsString(changedFields, "priority") {
+				before["priority_key"] = existing.PriorityKey
+				after["priority_key"] = effectivePriorityKey
 			}
 			meta["before"] = before
 			meta["after"] = after
@@ -710,6 +778,7 @@ func (s *Store) UpdateTodo(ctx context.Context, todoID int64, in UpdateTodoInput
 	existing.Body = in.Body
 	existing.AssigneeUserID = cloneInt64Ptr(in.AssigneeUserID)
 	existing.EstimationPoints = cloneInt64Ptr(in.EstimationPoints)
+	existing.PriorityKey = cloneStringPtr(effectivePriorityKey)
 	if updateSprint {
 		if in.ClearSprint {
 			existing.SprintID = nil
@@ -915,7 +984,7 @@ func (s *Store) MoveTodo(ctx context.Context, todoID int64, toColumnKey string, 
 }
 
 func getTodoTx(ctx context.Context, tx *sql.Tx, todoID int64) (Todo, error) {
-	row := tx.QueryRowContext(ctx, `SELECT id, project_id, local_id, title, body, column_key, rank, estimation_points, assignee_user_id, sprint_id, created_at, updated_at, done_at FROM todos WHERE id=?`, todoID)
+	row := tx.QueryRowContext(ctx, `SELECT id, project_id, local_id, title, body, column_key, rank, estimation_points, assignee_user_id, sprint_id, priority_key, created_at, updated_at, done_at FROM todos WHERE id=?`, todoID)
 	var t Todo
 	var columnKey string
 	var createdAtMs, updatedAtMs int64
@@ -923,8 +992,9 @@ func getTodoTx(ctx context.Context, tx *sql.Tx, todoID int64) (Todo, error) {
 	var estimationPoints sql.NullInt64
 	var assigneeUserID sql.NullInt64
 	var sprintID sql.NullInt64
+	var priorityKey sql.NullString
 	var doneAtMs sql.NullInt64
-	if err := row.Scan(&t.ID, &t.ProjectID, &localID, &t.Title, &t.Body, &columnKey, &t.Rank, &estimationPoints, &assigneeUserID, &sprintID, &createdAtMs, &updatedAtMs, &doneAtMs); err != nil {
+	if err := row.Scan(&t.ID, &t.ProjectID, &localID, &t.Title, &t.Body, &columnKey, &t.Rank, &estimationPoints, &assigneeUserID, &sprintID, &priorityKey, &createdAtMs, &updatedAtMs, &doneAtMs); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Todo{}, ErrNotFound
 		}
@@ -950,6 +1020,12 @@ func getTodoTx(ctx context.Context, tx *sql.Tx, todoID int64) (Todo, error) {
 		t.SprintID = &v
 	} else {
 		t.SprintID = nil
+	}
+	if priorityKey.Valid {
+		v := priorityKey.String
+		t.PriorityKey = &v
+	} else {
+		t.PriorityKey = nil
 	}
 	t.CreatedAt = time.UnixMilli(createdAtMs).UTC()
 	t.UpdatedAt = time.UnixMilli(updatedAtMs).UTC()

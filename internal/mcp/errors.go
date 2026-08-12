@@ -23,6 +23,7 @@ type adapterError struct {
 	Code    string
 	Message string
 	Details any
+	Cause   error `json:"-"`
 }
 
 func (e *adapterError) Error() string {
@@ -30,12 +31,20 @@ func (e *adapterError) Error() string {
 }
 
 func newAdapterError(status int, code, message string, details any) *adapterError {
-	return &adapterError{
+	err := &adapterError{
 		Status:  status,
 		Code:    code,
 		Message: message,
 		Details: details,
 	}
+	if code == CodeInternal {
+		if detailMap, ok := details.(map[string]any); ok {
+			if detail, ok := detailMap["detail"].(string); ok && detail != "" {
+				err.Cause = errors.New(detail)
+			}
+		}
+	}
+	return err
 }
 
 func mapStoreError(err error) *adapterError {
@@ -46,13 +55,23 @@ func mapStoreError(err error) *adapterError {
 		return newAdapterError(http.StatusForbidden, CodeForbidden, "forbidden", nil)
 	case errors.Is(err, store.ErrNotFound):
 		return newAdapterError(http.StatusNotFound, CodeNotFound, "not found", nil)
+	case errors.Is(err, store.ErrSprintsDisabled):
+		return newAdapterError(http.StatusBadRequest, CodeValidationError, store.ErrSprintsDisabled.Error(), map[string]any{"reason": "sprints_disabled"})
 	case errors.Is(err, store.ErrValidation):
-		return newAdapterError(http.StatusBadRequest, CodeValidationError, err.Error(), nil)
+		return newAdapterError(http.StatusBadRequest, CodeValidationError, err.Error(), reasonDetails(err))
 	case errors.Is(err, store.ErrConflict):
-		return newAdapterError(http.StatusConflict, CodeConflict, err.Error(), nil)
+		return newAdapterError(http.StatusConflict, CodeConflict, err.Error(), reasonDetails(err))
 	default:
 		return newAdapterError(http.StatusInternalServerError, CodeInternal, "internal error", map[string]any{"detail": err.Error()})
 	}
+}
+
+func reasonDetails(err error) any {
+	reason := store.ErrorReason(err)
+	if reason == "" {
+		return nil
+	}
+	return map[string]any{"reason": reason}
 }
 
 // mapPrivilegedStoreError maps store errors for authenticated callers of privileged tools.
@@ -62,4 +81,47 @@ func mapPrivilegedStoreError(err error) *adapterError {
 		return newAdapterError(http.StatusForbidden, CodeForbidden, "forbidden", nil)
 	}
 	return mapStoreError(err)
+}
+
+var clientErrorDetailKeys = map[string]struct{}{
+	"columnKey": {},
+	"detail":    {},
+	"field":     {},
+	"fields":    {},
+	"localId":   {},
+	"reason":    {},
+	"tool":      {},
+}
+
+// clientErrorDetails is the only adapter-error detail projection used on the
+// wire. Internal failures never expose details. Other error classes retain
+// only the explicitly reviewed keys above, so a newly added internal value
+// cannot become public merely by being attached to adapterError.Details.
+func clientErrorDetails(err *adapterError) map[string]any {
+	details := map[string]any{}
+	if err == nil || err.Code == CodeInternal {
+		return details
+	}
+	raw, ok := err.Details.(map[string]any)
+	if !ok {
+		return details
+	}
+	for key, value := range raw {
+		if _, allowed := clientErrorDetailKeys[key]; allowed {
+			details[key] = value
+		}
+	}
+	return details
+}
+
+func clientErrorResponseBody(err *adapterError) errorResponseBody {
+	message := err.Message
+	if err.Code == CodeInternal {
+		message = "internal error"
+	}
+	return errorResponseBody{
+		Code:    err.Code,
+		Message: message,
+		Details: clientErrorDetails(err),
+	}
 }

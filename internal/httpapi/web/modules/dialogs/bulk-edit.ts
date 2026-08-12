@@ -5,6 +5,7 @@ import { applyFieldTooltips, BULK_EDIT_TOOLTIPS } from "../field-tooltips.js";
 import { hasI18nKey, I18N_LOCALE_CHANGED, t } from "../i18n/index.js";
 import {
   getAssigneeFromUrl,
+  getPriorityFromUrl,
   getSortFromUrl,
   getBoard,
   getSlug,
@@ -15,7 +16,7 @@ import {
 } from "../state/selectors.js";
 import { invalidateBoard } from "../orchestration/board-refresh.js";
 import { setBulkUpdating } from "../realtime/guard.js";
-import { normalizeSprints } from "../sprints.js";
+import { boardSprintsEnabled, normalizeSprints } from "../sprints.js";
 import { invalidateTagsCache } from "./settings.js";
 import { normalizeTagName, resolveColumnKey } from "./todo.js";
 import type { Todo } from "../types.js";
@@ -193,7 +194,7 @@ function setPermissionsVisibility(role: string | null): void {
   const els = getBulkFormEls();
 
   if (els.assignRow) els.assignRow.style.display = !anonymous ? "" : "none";
-  if (els.sprintRow) els.sprintRow.style.display = !anonymous && role === "maintainer" ? "" : "none";
+  if (els.sprintRow) els.sprintRow.style.display = !anonymous && role === "maintainer" && boardSprintsEnabled(board) ? "" : "none";
   if (els.tagsRow) els.tagsRow.style.display = isMaintainer ? "" : "none";
   if (els.estRow) els.estRow.style.display = isMaintainer ? "" : "none";
 
@@ -254,7 +255,9 @@ export async function openBulkEditDialog(initialIds: number[], opts: OpenBulkEdi
 
   populateStatusSelect(els.status);
   populateAssigneeSelect(els.assignee);
-  await populateSprintSelect(els.sprint);
+  if (boardSprintsEnabled(getBoard())) {
+    await populateSprintSelect(els.sprint);
+  }
   setPermissionsVisibility(opts.role);
   updateApplyButtonState();
 
@@ -269,7 +272,7 @@ export async function openBulkEditDialog(initialIds: number[], opts: OpenBulkEdi
 async function runBulkApply(todoIds: number[]): Promise<void> {
   const els = getBulkFormEls();
   const applyAssign = !!els.applyAssign?.checked;
-  const applySprint = !!els.applySprint?.checked;
+  const applySprint = boardSprintsEnabled(getBoard()) && !!els.applySprint?.checked;
   const applyStatus = !!els.applyStatus?.checked;
   const applyTags = !!els.applyTags?.checked;
   const applyEst = !!els.applyEst?.checked;
@@ -374,7 +377,7 @@ async function runBulkApply(todoIds: number[]): Promise<void> {
     invalidateTagsCache();
   }
 
-  await invalidateBoard(slug, getTag(), getSearch(), getSprintIdFromUrl(), getAssigneeFromUrl(), getSortFromUrl());
+  await invalidateBoard(slug, getTag(), getSearch(), getSprintIdFromUrl(), getAssigneeFromUrl(), getSortFromUrl(), getPriorityFromUrl());
 
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {

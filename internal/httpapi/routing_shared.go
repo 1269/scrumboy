@@ -34,6 +34,11 @@ func (s *Server) parseAssigneeFilterFromQuery(ctx context.Context, r *http.Reque
 	return store.ParseAssigneeFilter(r.URL.Query().Get("assignee"), actorUserID)
 }
 
+// parsePriorityFilterFromQuery validates the board "priority" query value.
+func (s *Server) parsePriorityFilterFromQuery(r *http.Request) (store.PriorityFilter, error) {
+	return store.ParsePriorityFilter(r.URL.Query().Get("priority"))
+}
+
 // parseSortOrderFromQuery validates the board "sort" query value.
 func (s *Server) parseSortOrderFromQuery(r *http.Request) (store.SortOrder, error) {
 	return store.ParseSortOrder(r.URL.Query().Get("sort"))
@@ -45,7 +50,7 @@ func (s *Server) parseSortOrderFromQuery(r *http.Request) (store.SortOrder, erro
 // sprintId=unscheduled -> Mode "unscheduled" (sprint_id IS NULL).
 // sprintId=<number> -> project-local sprint number (resolved inline by board queries).
 // Returns error for invalid values (caller should respond 400).
-func (s *Server) parseSprintFilterFromQuery(r *http.Request, projectID int64) (store.SprintFilter, error) {
+func (s *Server) parseSprintFilterFromQuery(r *http.Request) (store.SprintFilter, error) {
 	v := r.URL.Query().Get("sprintId")
 	if v == "" {
 		return store.SprintFilter{Mode: "none"}, nil

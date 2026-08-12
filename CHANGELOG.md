@@ -1,6 +1,315 @@
 # Changelog
 
-> **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.28.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags) - see those releases.
+> **Upgrades:** No breaking changes for **3.7.0 ≤ v ≤ 3.31.x** unless noted below. Notable upgrade impact: **3.22.0** (MCP/OAuth), **3.24.0** (MCP tool names), **3.26.0** (MCP project tags), **3.29.0** (MCP JSON-RPC error/`board_get` identity), **3.30.0** (reversible per-project sprint capability), **3.31.0** (per-project priority tiers) - see those releases.
+
+## [3.31.3] - 2026-08-12
+
+### Added
+
+- **Board priority filter** - Board reads accept an optional `priority` query
+  param / MCP `board_get.priority` (empty = all, `none` = unset, otherwise a
+  tier key). The filter dropdown adds a Priority section listing all tiers,
+  “No priority,” and “All priorities,” and keeps the selection across board
+  reloads. REST and MCP contract tests cover the filter grammar.
+
+## [3.31.2] - 2026-08-12
+
+### Changed
+
+- **Todo deletions move behind application services** - REST and MCP todo
+  deletions now share `internal/application/todo` command boundaries instead of
+  owning write logic in the transports. HTTP and MCP adapters stay thin
+  wrappers; permissions, validation, response shapes, and REST board-refresh
+  side effects are preserved (MCP remains realtime-silent). Contract tests lock
+  the migrated deletion paths.
+
+## [3.31.1] - 2026-08-11
+
+### Added
+
+- **MCP `board_get.columnKey` filter** - Optional `columnKey` scopes a board read
+  to one workflow column. Omitting it preserves the existing all-columns
+  behavior. Pagination metadata and `cursorByColumn` remain keyed by column;
+  cursors for other valid workflow columns are ignored when the request is
+  scoped. Public MCP documentation and contract coverage now describe and lock
+  down the filter, pagination continuation, and irrelevant-cursor semantics.
+
+## [3.31.0] - 2026-08-11
+
+### Added
+
+- **Customizable project priority tiers** - Maintainers can create, rename,
+  recolor, and delete unused priority tiers. Todos can carry a stable
+  `priorityKey`; board responses include ordered tier definitions, and REST and
+  MCP expose priority configuration operations.
+- **Priority-aware backup/import** - Export format 1.1 now emits explicit
+  priority presence while remaining compatible with older 1.1 backups.
+
+### Fixed
+
+- REST todo PATCH distinguishes omitted priority (preserve), explicit `null`
+  (clear), and a string key (assign). Merge import enforces that every stored
+  todo priority resolves within its project.
+- Priority mutations and merge imports share project-level SQLite writer
+  serialization, preventing avoidable busy errors and delete/assignment races.
+
+## [3.30.3] - 2026-08-10
+
+### Changed
+
+- **GitHub Actions upgrades** - Bump `actions/setup-go` to `v7.0.0`,
+  `github/codeql-action` to `v4.37.3`, `ossf/scorecard-action` to `v2.4.4`,
+  and `docker/login-action` to `v4.5.1`.
+
+## [3.30.2] - 2026-08-09
+
+### Changed
+
+- **Go dependency upgrades** - Bump `github.com/coreos/go-oidc/v3` to `v3.20.0`,
+  `github.com/golang-jwt/jwt/v5` to `v5.3.1`, and `modernc.org/sqlite` to
+  `v1.54.0` (SQLite 3.53.3 engine; transitive `modernc.org/libc` to `v1.74.1`).
+
+## [3.30.1] - 2026-08-09
+
+### Added
+
+- **Configurable role for default-board auto-enrollment** - The org-wide
+  "default board for new users" admin setting now accepts a project role
+  (Viewer, Contributor, or Maintainer) alongside the board, instead of always
+  enrolling new users as a Viewer. Settings → Users shows a role picker next to
+  the project picker. Existing configurations with no role set keep enrolling at
+  Viewer, and clearing the override resets the role back to that same Viewer
+  fallback.
+
+- **Default-board GET consistency and role-read errors** - The admin GET path
+  now reads `defaultBoardProjectId` and `defaultBoardRole` from one read-only
+  SQLite snapshot. Real database errors on the role row propagate instead of
+  being reported as Viewer.
+
+### Changed
+
+- **Omitted `role` preserves an existing default-board role** - PUT
+  `/api/admin/settings/default-board` with only `projectId` keeps a previously
+  configured role instead of resetting it to Viewer, so older clients that do
+  not send `role` cannot downgrade a setting they do not understand. First-time
+  configure with no stored role still defaults to Viewer.
+
+## [3.30.0] - 2026-08-09
+
+### Added
+
+- **Reversible per-project sprint capability** - Maintainers can disable sprints
+  from project settings without deleting or changing sprint records, lifecycle
+  timestamps, or todo-to-sprint associations. Existing and imported projects
+  default to enabled, backups preserve the setting, and older backups without
+  it remain compatible.
+
+### Changed
+
+- **Disabled sprint policy is enforced across every canonical boundary** -
+  Sprint create, update, activate, close, and delete operations are rejected
+  consistently through REST and both MCP transports. Todo creation or updates
+  cannot introduce or change a non-null sprint assignment while disabled;
+  unrelated edits preserve dormant assignments and explicit removal remains
+  available. Transactional project locking keeps capability changes and
+  mutations race-safe without bypassing the sprint application services.
+
+- **Live reads and UI honor suspended sprints** - Board and dashboard
+  projections expose no effective active sprint and treat dormant sprint todos
+  as unscheduled while retaining historical data. Sprint filters, controls,
+  chips, and sprint-scoped charts are removed or rejected while disabled.
+  Re-enabling forces fresh board and sprint data so the original lifecycle
+  state and todo associations become effective again without reconstruction.
+
+## [3.29.9] - 2026-08-08
+
+### Security
+
+- **npm advisories for DOMPurify, Mermaid, and transitive NanoID** - Pin
+  `dompurify` to `3.4.13`, `mermaid` to `11.16.1`, and `nanoid` to `3.3.17`
+  beneath PostCSS via npm overrides so the frontend resolves patched releases
+  for GHSA-55q2-fjhq-7xh7, GHSA-2v8p-3f2j-5mp7, GHSA-3rrr-jr9j-h3q3,
+  GHSA-6x64-9x62-f2gx, GHSA-c4c3-pg64-4m4v, GHSA-rhh3-jpg6-66xh, and
+  GHSA-2v37-7h3g-55p8. Vendored browser bundles and documentation pins updated;
+  no application behavior change.
+
+## [3.29.8] - 2026-08-08
+
+### Changed
+
+- **Sprint mutations move behind application services** - REST and MCP sprint
+  definition, lifecycle, and deletion operations now use prepared application
+  services with narrow capability boundaries. Existing validation,
+  authorization, response, event, and compatibility contracts are preserved,
+  with comprehensive application, store, REST, and MCP contract coverage.
+
+### Fixed
+
+- **Sprint close mutations are project-scoped** - Closing a sprint now requires
+  both its project and sprint identity, preventing an authorized request for one
+  project from closing a sprint belonging to another project.
+
+## [3.29.7] - 2026-08-05
+
+### Changed
+
+- **Todo-link mutations move behind application services** - REST and
+  MCP directed todo-link add and remove now share
+  `internal/application/todolink` command boundaries instead of owning write
+  logic in the transports. HTTP and MCP adapters stay thin wrappers;
+  permissions, validation, response shapes, and REST board-refresh side
+  effects are preserved. Contract tests lock the migrated mutation paths.
+
+## [3.29.6] - 2026-08-03
+
+### Security
+
+- **npm advisories for transitive `postcss` and `undici`** - Pin
+  `postcss` to `8.5.25` and `undici` to `7.29.0` via npm overrides so Vite and
+  jsdom resolve patched releases for GHSA-fxqj-rqcc-2cmp and the five Undici
+  advisories reported against `7.28.0`. Dev/test tooling only; no production
+  runtime dependency change.
+
+## [3.29.5] - 2026-08-03
+
+### Changed
+
+- **Project membership mutations move behind application services** - REST and
+  MCP member add, role update, and remove now share
+  `internal/application/membership` command boundaries instead of owning write
+  logic in the transports. HTTP and MCP adapters stay thin wrappers;
+  permissions, validation, response shapes, and REST membership-event side
+  effects are preserved. Contract tests lock the migrated mutation paths.
+
+## [3.29.4] - 2026-08-02
+
+### Changed
+
+- **Workflow column mutations move behind application services** - REST and
+  MCP workflow column create, update, and delete now share
+  `internal/application/workflow` command boundaries instead of owning write
+  logic in the transports. HTTP and MCP adapters stay thin wrappers;
+  permissions, validation, response shapes, and REST board-refresh side
+  effects are preserved. Contract tests lock the migrated mutation paths.
+
+## [3.29.3] - 2026-08-02
+
+### Changed
+
+- **Todo creates move behind application services** - REST and MCP todo
+  creates now share `internal/application/todo` command boundaries instead of
+  owning write logic in the transports. HTTP and MCP adapters stay thin
+  wrappers; permissions, validation, response shapes, and side effects are
+  preserved. Contract tests lock the migrated create paths.
+
+## [3.29.2] - 2026-07-31
+
+### Changed
+
+- **Todo writes move behind application services** - REST and MCP todo
+  updates and moves now share `internal/application/todo` command boundaries
+  instead of owning write logic in the transports. HTTP and MCP adapters stay
+  thin wrappers; permissions, validation, response shapes, and SSE side effects
+  are preserved. Contract tests lock the migrated update and move paths.
+
+### Fixed
+
+- **MCP todo update preserves sprint when omitted** - Omitting sprint from an
+  MCP todo update no longer clears the existing sprint assignment.
+
+## [3.29.1] - 2026-07-31
+
+### Fixed
+
+- **Empty-search "no results" no longer appears as an extra desktop lane** - After the auto-fit board grid change, the "No todos found matching …" message was a grid sibling of the columns and stole a lane track (or compressed columns when spanning). On desktop/tablet (`min-width: 621px`) it is absolutely positioned over the board so lane layout is unchanged. Mobile flex layout is unchanged.
+
+## [3.29.0] - 2026-07-31
+
+### Changed
+
+- **Board reads move behind an application service** - REST initial board,
+  lane pagination, legacy numeric-ID board, and slug access resolution now
+  share an `internal/application/board` seam. MCP `board_get` orchestration
+  (legacy `/mcp`, JSON-RPC, and the permanent `board.get` alias) uses the same
+  application layer. HTTP and MCP adapters stay thin transport wrappers;
+  runtime permissions, filters, pagination, and response shapes are preserved.
+  Contract tests lock the migrated paths.
+
+- **Numeric REST board compatibility is explicit** -
+  `GET /api/projects/{id}/board` remains a supported, unpaged compatibility
+  endpoint with no deprecation or scheduled removal. New clients should prefer
+  the paged slug board routes; the API documentation now describes slug
+  discovery and exact lane-page aggregation for clients that choose to
+  migrate. Runtime route behavior is unchanged.
+
+- **MCP `board_get` validation/access precedence is explicit** - Existing
+  behavior is now documented and protected as a tiered contract. Input shape,
+  required slug, per-column limit, assignee grammar/type, and sort validation
+  precede project access; sprint and workflow/cursor validation follow access,
+  preserving `NOT_FOUND` masking for denied, missing, and expired targets.
+  Legacy MCP, JSON-RPC, `board_get`, and `board.get` remain equivalent. REST
+  slug board reads intentionally remain access-first.
+
+- **MCP `board_get.sprintId` identity is explicit** - Tool discovery and public
+  documentation now state that `board_get.sprintId` is the stored sprint row
+  ID returned by `sprints_list`, not the project-local `number` used by REST
+  board filtering. Existing runtime behavior, missing/cross-project masking,
+  and the permanent `board.get` alias remain unchanged.
+
+- **MCP `board_get` returns canonical slug identity** - Successful
+  `project.projectSlug` and todo `projectSlug` fields now use the persisted
+  canonical slug over legacy and JSON-RPC transports and the permanent
+  `board.get` alias. Lookup still accepts uppercase or whitespace-padded
+  equivalents, but the response no longer echoes that noncanonical spelling.
+  Clients that compared the submitted value byte-for-byte should use the
+  returned canonical identifier instead.
+
+- **MCP JSON-RPC tool errors carry sanitized structured content** - On
+  `tools/call` failure, HTTP 200 + `isError: true` responses now include
+  `structuredContent` with allowlisted `code`, `message`, and `details`
+  matching the legacy adapter envelope. `INTERNAL` always returns message
+  `internal error` with `{}` details; database, infrastructure, and invariant
+  text stay in the server log. The legacy HTTP status is not copied into the
+  JSON-RPC tool result. Plain-text `content` messages are unchanged.
+
+- **MCP JSON-RPC exposes approved legacy metadata beside tool data** -
+  Successful `tools/call` results keep existing data fields and add an
+  allowlist of already-public legacy `meta` values into `structuredContent`
+  and the JSON text block: `system_getCapabilities` → `adapterVersion`;
+  `sprints_list` → `unscheduledCount`; `dashboard_listTodos` → `nextCursor` /
+  `hasMore`; `board_get` → `nextCursorByColumn` / `hasMoreByColumn` /
+  `totalCountByColumn`. Unapproved metadata is omitted; colliding data fields
+  win. Legacy `/mcp` keeps its `{data,meta}` separation.
+
+### Fixed
+
+- **MCP Temporary Board reads no longer fail on activity maintenance** -
+  `board_get` now treats its final throttled `UpdateBoardActivity` call as
+  best-effort, matching REST board reads. If the board snapshot loaded
+  successfully but the lifetime refresh fails, legacy and JSON-RPC clients
+  receive the complete board while the server logs the project and internal
+  cause. Durable, expired, and earlier read-failure behavior is unchanged.
+
+- **MCP `board_get` discovery and pagination stay aligned** - JSON-RPC
+  `board_get` success payloads and tool catalog/`tools/list` descriptions
+  consistently surface the per-column pagination maps, matching legacy `meta`
+  and capability docs.
+
+## [3.28.4] - 2026-07-28
+
+### Added
+
+- **Wrap lanes into rows** - Settings → Customization gains an opt-in Wrap lanes into rows toggle (off by default). On wide screens (≥1301px), boards with more than five lanes split into two equal rows of `⌊n / 2⌋` columns (for example 8 → 4+4, 10 → 5+5); an odd leftover lane sits alone on a third row at normal width. Signed-in users sync via `/api/user/preferences`; hydration resets to off before applying the server value so a previous browser user's local preference cannot leak across accounts. Anonymous users keep the choice in localStorage only. Tablet/mobile board layout is unchanged.
+
+### Fixed
+
+- **Board columns fill width when fewer than five lanes (PR #201)** - `.board` used a hardcoded five-column grid, so workflows with fewer lanes left empty tracks on the right. Switched to `auto-fit` so existing columns stretch to fill the row.
+
+## [3.28.3] - 2026-07-28
+
+### Added
+
+- **Per-user cards-per-lane preference (PR #198)** - Settings → Customization gains a Cards per lane control (`20` / `50` / `75` / `100`, default `20`) so each signed-in user can choose how many cards load per column before "Load more". The preference is validated server-side, hydrated at boot, and applied to the initial board fetch, Projects hover-prefetch, and the load-more floor reset. Paged loading and "Load more" stay in place.
 
 ## [3.28.2] - 2026-07-27
 

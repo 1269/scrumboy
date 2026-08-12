@@ -87,7 +87,7 @@ After Origin validation and authentication, **non-POST** methods receive an empt
 
 `params` is unmarshaled with the Go JSON package **without** `DisallowUnknownFields`, so **extra keys** on `params` beside `name` / `arguments` are **ignored** (not rejected).
 
-**`tools/call` uses the same tool registry as `POST /mcp`**. For tools that have a catalog definition, the server performs a **lightweight check** that JSON Schema `required` top-level properties are present in `arguments` before calling the handler; full JSON Schema validation is not performed. **Unknown tool names** produce an HTTP **200** JSON-RPC **`result`** with **`isError: true`** and a text **`content`** message **`tool not found`** (not a JSON-RPC top-level **`error`** object with `-32601`). Invalid/missing `params` shape still yields JSON-RPC **`error`** (e.g. `-32602` **invalid params**).
+**`tools/call` uses the same tool registry as `POST /mcp`**. For tools that have a catalog definition, the server performs a **lightweight check** that JSON Schema `required` top-level properties are present in `arguments` before calling the handler; full JSON Schema validation is not performed. **Unknown tool names** produce an HTTP **200** JSON-RPC **`result`** with **`isError: true`**, a text **`content`** message **`tool not found`**, and sanitized machine-readable **`structuredContent`** (not a JSON-RPC top-level **`error`** object with `-32601`). Invalid/missing `params` shape still yields JSON-RPC **`error`** (e.g. `-32602` **invalid params**).
 
 **Example `tools/call`:**
 
@@ -133,9 +133,52 @@ All JSON-RPC **responses with a body** include `"jsonrpc": "2.0"` and preserve t
 }
 ```
 
-**`structuredContent`** is the tool’s result value (same conceptual payload as legacy `data`). **`content`** is a single MCP-style **text** block whose **`text`** field is JSON **string** of that same payload (from `json.Marshal` in `internal/mcp/jsonrpc_handler.go`).
+**`structuredContent`** is the tool’s result value (same conceptual payload as
+legacy `data`). **`content`** is a single MCP-style **text** block whose
+**`text`** field is a JSON **string** of that same payload (from `json.Marshal`
+in `internal/mcp/jsonrpc_handler.go`). Four tools also copy explicitly approved,
+public legacy metadata beside their existing data fields:
+`system_getCapabilities` adds `adapterVersion`; `sprints_list` adds
+`unscheduledCount`; `dashboard_listTodos` adds `nextCursor` and `hasMore`; and
+`board_get` adds `nextCursorByColumn`, `hasMoreByColumn`, and
+`totalCountByColumn`. The text block serializes the same enriched object.
+Unlisted handler metadata is not exposed over JSON-RPC. If an existing data
+field collides with an approved metadata name, the data field wins.
 
-**Error:**
+**Tool execution error:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "invalid sort"
+      }
+    ],
+    "structuredContent": {
+      "code": "VALIDATION_ERROR",
+      "message": "invalid sort",
+      "details": {
+        "field": "sort"
+      }
+    },
+    "isError": true
+  }
+}
+```
+
+Tool failures retain HTTP **200** and MCP **`isError: true`**. The text block
+retains the existing human-readable message for compatibility.
+**`structuredContent`** contains the stable adapter **`code`**, the same
+**`message`**, and allowlisted **`details`**. It deliberately does not copy the
+legacy transport's HTTP status. For **`INTERNAL`**, **`details`** is always
+`{}` and **`message`** is always `internal error`; the full cause or invariant
+message is written only to the server log.
+
+**JSON-RPC protocol error:**
 
 ```json
 {
@@ -193,6 +236,10 @@ All JSON-RPC **responses with a body** include `"jsonrpc": "2.0"` and preserve t
 ```
 
 - `details` is always present; it is an object when the adapter has nothing to attach (`{}`).
+- Detail keys are allowlisted at the MCP serialization boundary. `INTERNAL`
+  errors always return message `internal error` with `{}` details and never
+  expose database, infrastructure, or invariant text; the underlying cause is
+  recorded in the server log.
 - HTTP status codes generally align with error codes (e.g. 401 for `AUTH_REQUIRED`, 403 for `CAPABILITY_UNAVAILABLE`, 404 for `NOT_FOUND`), but exact mappings may vary by handler.
 
 ---
@@ -296,7 +343,7 @@ Tools use these **public** identifiers as primary keys in inputs and outputs:
 
 - **Project:** `projectSlug`
 - **Todo:** `projectSlug` + `localId` (no global todo id in MCP todo/board shapes)
-- **Sprint:** `projectSlug` + `sprintId` - `sprintId` is the **stored sprint row id** (see sprint list/get); sprint payloads also include `number` for display ordering
+- **Sprint:** `projectSlug` + `sprintId` - `sprintId` is the **stored sprint row id** (see sprint list/get); sprint payloads also include the distinct project-local `number` for display ordering and REST board filtering
 - **Mine-scope tag:** `tagId` (current user’s tag library)
 - **Project-scope tag (durable projects):** grouped by **canonical name**. `tags_listProject` returns one logical entry per canonical name (names are compared after canonicalization, so legacy `make space` and `make-space` rows collapse into one `make-space` entry); a `tagId` is present **only** for board-scoped tags (not user-owned). Grouped personal labels omit `tagId` and are addressed by `projectSlug` + `tagName`. A legacy row whose stored name cannot be canonicalized keeps its raw stored name as the label, and that label is what `tagName` and the board `tag` filter accept for it.
 - **Project-scope tag (temporary boards):** **not grouped.** Boards with an expiry keep the row-level projection — one entry per tag row, each with a real `tagId` — because their colors and deletions are still addressed by `tagId`.
@@ -358,6 +405,10 @@ Grouped by domain. All are listed in `implementedTools` from capabilities.
 
 - `workflow_list`, `workflow_create`, `workflow_update`, `workflow_delete` - manage a project's workflow columns (board lanes).
 
+**priorities**
+
+- `priorities_list`, `priorities_create`, `priorities_update`, `priorities_delete` - list and manage a project's ordered priority tiers.
+
 **Planned tools:** none exposed in capabilities today (`plannedTools` omitted when empty).
 
 ---
@@ -374,7 +425,9 @@ Conventions:
 - **Purpose:** Describe server, auth, identities, pagination notes, and implemented tools.
 - **Input:** `{}` (use empty object for POST).
 - **Output:** `data` = capabilities object: `serverMode`, `auth`, `bootstrapAvailable`, `identity`, `pagination`, `implementedTools`, optional `plannedTools`.
-- **Meta:** e.g. `adapterVersion` (integer).
+- **Metadata:** legacy `/mcp` returns `meta.adapterVersion` (integer);
+  JSON-RPC returns `adapterVersion` beside the capability fields in
+  `structuredContent` and text content.
 - **Example (GET or POST):**  
   `POST /mcp` `{"tool":"system_getCapabilities","input":{}}`  
   → `ok: true`, `data.implementedTools` = full tool array.
@@ -395,18 +448,29 @@ Conventions:
 ### `board_get`
 
 - **Purpose:** Board snapshot with optional tag/search/sprint/assignee filters and **per-column** pagination.
-- **Input:** `projectSlug` (required); optional `tag`, `search`, `assignee`, `sprintId` (sprint row id; must belong to the project when set); optional `limit` (default 20, max 100); optional `cursorByColumn` (map column key → opaque cursor string). Omitting `sprintId` applies no sprint-based filter on the board query (internal mode `none`).
+- **Input:** `projectSlug` (required); optional `tag`, `search`, `assignee`, `sprintId` (the stored sprint row id returned by `sprints_list`, not its project-local `number`; must belong to the project when set); optional `columnKey` (workflow column key; surrounding whitespace is trimmed; omit to return all workflow columns); optional `limit` (default 20, max 100); optional `cursorByColumn` (map column key → opaque cursor string). Omitting `sprintId` or sending `null` applies no sprint-based filter on the board query (internal mode `none`). Nonpositive values return `VALIDATION_ERROR`; missing and cross-project row IDs both return `NOT_FOUND`. An unknown or nonexistent `columnKey` returns `VALIDATION_ERROR` with `field: "columnKey"`.
+- **Validation/access precedence:** after authentication and capability checks, malformed input shape, missing `projectSlug`, invalid `limit`, assignee type/grammar, and invalid `sort` return their exact validation error before project access. Project access occurs before sprint resolution, workflow/`columnKey` validation, and `cursorByColumn` validation, so denied, missing, or expired projects mask bad `sprintId`, `columnKey`, and `cursorByColumn` values as `NOT_FOUND`. Cursor values are decoded in workflow order for columns that are actually read; a malformed later-lane cursor can follow reads of earlier lanes. When `columnKey` scopes the request to one column, cursors for other valid workflow columns in `cursorByColumn` are ignored and are not decoded. Both MCP transports and the permanent `board.get` alias use this order. REST slug board reads intentionally resolve access before all query validation, so cross-transport first-error precedence differs without changing access rules.
 - **Tag filter:** on durable projects, `tag` is matched on the same grouping key `tags_listProject` labels entries with, so filtering by `make-space` returns todos carrying either the canonical row or a legacy `make space` row and filtered counts agree with the chip counts. Temporary boards keep exact stored-name matching (row-level chips): the filter is not rewritten through `TagGroupKey`, so a `make space` chip selects only that row. A `tag` that matches no row returns an empty board rather than an unfiltered one.
 - **Assignee filter:** `assignee` is a **string**. Use `"me"` for the authenticated caller, `"unassigned"` for todos with no assignee, or a positive user ID encoded as a string such as `"42"`. Sentinels are case-sensitive after surrounding whitespace is trimmed. Unknown/non-member positive IDs return an empty board; malformed values return `VALIDATION_ERROR` with `field: "assignee"`. A JSON number such as `42` is invalid.
-- **Output:** `data.project` (`projectSlug`, `name`, `role`), `data.columns` (each: `key`, `name`, `isDone`, `items` as todo-shaped objects).
+- **Output:** `data.project` (`projectSlug`, `name`, `role`), `data.columns`
+  (each: `key`, `name`, `isDone`, `items` as todo-shaped objects).
+  Successful project and todo `projectSlug` fields always use the persisted
+  canonical slug. Lookup accepts normalization-equivalent input such as
+  uppercase or surrounding whitespace, but the response does not echo that
+  spelling.
 - **Meta:** `nextCursorByColumn`, `hasMoreByColumn`, `totalCountByColumn` (per column key). See **Board pagination** below.
+- **Temporary Board activity:** after an expiring board is completely loaded,
+  MCP makes a final, throttled best-effort activity refresh. A maintenance
+  write failure is logged internally but does not discard the authorized board
+  snapshot or add a public warning. Success therefore does not guarantee that
+  this request persisted a new `expiresAt`.
 - **Note:** Not available in anonymous mode or before bootstrap; requires sign-in.
 
 ### Todos
 
 | Tool | Input (summary) | Output (summary) |
 |------|-----------------|------------------|
-| `todos_create` | `projectSlug`, `title`, optional `body`, `tags`, `columnKey`, `estimationPoints`, `sprintId`, `assigneeUserId`, `position` | `data.todo` |
+| `todos_create` | `projectSlug`, `title`, optional `body`, `tags`, `columnKey`, `estimationPoints`, `sprintId`, `assigneeUserId`, `priorityKey`, `position` | `data.todo` |
 | `todos_get` | `projectSlug`, `localId` | `data.todo` |
 | `todos_search` | `projectSlug`, `query`, optional `limit`, `excludeLocalIds` | `data.items` (lightweight search hits) |
 | `todos_update` | `projectSlug`, `localId`, `patch` (JSON patch object) | `data.todo` |
@@ -417,6 +481,12 @@ Conventions:
 | `todos_linkRemove` | `projectSlug`, `localId`, `targetLocalId` | `data.outbound`, `data.inbound` (refreshed) |
 
 Column keys accept common aliases (normalized internally). Todo payloads use **`localId`** and **`projectSlug`**; they do not expose the internal global todo id.
+
+Todo objects include optional `priorityKey`. For `todos_update`, omitting
+`patch.priorityKey` preserves the current assignment, JSON `null` clears it,
+and a string assigns that project-local tier. Unknown and cross-project keys
+return `VALIDATION_ERROR`. Priority filtering and priority-based sorting are
+not supported in this release.
 
 **Linked stories:** this is the same "Linked Stories" relation shown on the todo detail page in the
 web UI (`GET/POST/DELETE /api/board/{slug}/todos/{localId}/links[/targetLocalId]`). `todos_linkAdd`
@@ -442,7 +512,7 @@ Shared inputs: many tools use `projectSlug` only or `projectSlug` + `sprintId` (
 
 | Tool | Input | Output |
 |------|-------|--------|
-| `sprints_list` | `projectSlug` | `data.items` (sprint rows + counts), `meta.unscheduledCount` |
+| `sprints_list` | `projectSlug` | `data.items` (sprint rows + counts); legacy `meta.unscheduledCount`, JSON-RPC sibling `unscheduledCount` |
 | `sprints_get` | `projectSlug`, `sprintId` | `data.sprint` |
 | `sprints_getActive` | `projectSlug` | `data.sprint` - sprint object or JSON `null` when there is no active sprint |
 | `sprints_create` | `projectSlug`, `name`, `plannedStartAt`, `plannedEndAt` (ISO-8601 strings) | `data.sprint` |
@@ -496,6 +566,46 @@ Manage a project's workflow columns (board lanes). These call the same store met
 
 Like other MCP mutations, workflow changes call the store directly and do not emit `board.refresh_needed`, so open web clients stay stale until another refresh.
 
+### Priorities
+
+Priority tiers are project definitions with shape
+`{ "key", "name", "color", "position" }`. Keys are stable and immutable;
+names and `#RRGGBB` colors are editable. A project supports at most 12 tiers
+and must retain at least one.
+
+REST routes:
+
+| Method and path | Role | Response / behavior |
+|---|---|---|
+| `GET /api/board/{slug}/priorities` | Viewer+; active link-accessible temporary boards | `200 {"items":[...]}` in position order |
+| `POST /api/board/{slug}/priorities` | Maintainer+ | Body `{"name":"Critical"}`; `201` tier |
+| `PATCH /api/board/{slug}/priorities/{key}` | Maintainer+ | Body requires `name` and `color`; `204` |
+| `DELETE /api/board/{slug}/priorities/{key}` | Maintainer+ | `204`; rejects the last or an in-use tier |
+| `GET /api/board/{slug}/priorities/counts` | Maintainer+ | `200 {"slug", "countsByPriorityKey"}`; missing keys count as zero |
+
+Both REST todo PATCH forms—preferred
+`/api/board/{slug}/todos/{localId}` and legacy `/api/todos/{id}`—use the same
+priority presence contract: omitted preserves, `null` clears, and a string
+assigns. Other established replacement-style fields retain their existing
+semantics. Initial REST board responses expose `priorityOrder`; lane pagination
+does not repeat it.
+
+MCP tools:
+
+| Tool | Input | Output / role |
+|---|---|---|
+| `priorities_list` | `projectSlug` | `data.items`; Viewer+ |
+| `priorities_create` | `projectSlug`, `name` | `data.priority`; Maintainer+ |
+| `priorities_update` | `projectSlug`, `priorityKey`, `name`, `color` | `data.priority`; Maintainer+ |
+| `priorities_delete` | `projectSlug`, `priorityKey` | `data.deleted`; Maintainer+ |
+
+Stable priority validation reasons include `invalid_priority_key`,
+`invalid_priority_tier_name`, `invalid_priority_tier_color`,
+`priority_tier_limit_reached`, and `priority_tier_minimum_required`.
+Deleting an assigned tier returns `CONFLICT` with
+`reason: priority_tier_in_use`. Inaccessible durable projects retain the
+shared `NOT_FOUND` existence-hiding behavior.
+
 ### Dashboard
 
 Cross-project "my work" tools for the signed-in user. Not available in anonymous mode or before bootstrap; requires sign-in.
@@ -505,7 +615,11 @@ Cross-project "my work" tools for the signed-in user. Not available in anonymous
 | `dashboard_getSummary` | optional `timezone` (IANA name; defaults to UTC for calendar-week boundaries) | `data.summary` - assigned counts/points, per-project sections with `activeSprint` (nullable) and `sprintSections`, completion/WIP/throughput analytics |
 | `dashboard_listTodos` | optional `limit` (default 20, max 100), `cursor`, `sort` (`activity` default, or `board`) | `data.items` (todos assigned to the caller across all projects) |
 
-**Meta (`dashboard_listTodos`):** `nextCursor` (opaque, `null` when there is no next page), `hasMore`. Cursor shape depends on `sort` (see the REST dashboard-todos section below for the underlying encoding); a cursor from one `sort` is not valid for the other.
+**Pagination metadata (`dashboard_listTodos`):** `nextCursor` (opaque, `null`
+when there is no next page) and `hasMore` are returned under legacy `meta` and
+beside `items` in JSON-RPC structured/text content. Cursor shape depends on
+`sort` (see the REST dashboard-todos section below for the underlying
+encoding); a cursor from one `sort` is not valid for the other.
 
 ### Metrics
 
@@ -533,12 +647,13 @@ System-level user management, gated by **system role** (owner/admin), not projec
 This is **not** a single cursor for the whole board.
 
 - **`limit`:** Maximum todos returned **per workflow column** (default 20, clamped 1-100).
-- **`cursorByColumn`:** Map from **column key** (string) to an **opaque** cursor token (base64url). Cursors are produced by the server; clients should not parse them.
-- **`meta.nextCursorByColumn`:** Per-column next cursor, or `null` when there is no next page.
-- **`meta.hasMoreByColumn`:** Whether more todos exist in that column for the same filters.
-- **`meta.totalCountByColumn`:** Total matching todos in that column (independent of the current page).
+- **`columnKey`:** Optional. When set, the response and pagination metadata are scoped to that single workflow column; other columns are omitted and are not queried. Omit to preserve the existing all-columns behavior.
+- **`cursorByColumn`:** Map from **column key** (string) to an **opaque** cursor token (base64url). Cursors are produced by the server; clients should not parse them. When `columnKey` is set, only the cursor for the selected column is applied; entries for other valid workflow columns are ignored.
+- **`meta.nextCursorByColumn`:** Per-column next cursor, or `null` when there is no next page. When `columnKey` is set, only the selected column appears in this map.
+- **`meta.hasMoreByColumn`:** Whether more todos exist in that column for the same filters. When `columnKey` is set, only the selected column appears in this map.
+- **`meta.totalCountByColumn`:** Total matching todos in that column (independent of the current page). When `columnKey` is set, only the selected column appears in this map.
 
-Invalid column keys in `cursorByColumn` or malformed cursors → `VALIDATION_ERROR` with field hints.
+Unknown column keys in `cursorByColumn` or malformed cursors for columns that are actually read → `VALIDATION_ERROR` with field hints.
 
 ---
 
@@ -548,11 +663,26 @@ The browser REST API accepts the same assignee grammar on:
 
 - `GET /api/board/{slug}`
 - `GET /api/board/{slug}/lanes/{status}`
-- `GET /api/projects/{id}/board` (legacy full-board route)
+- `GET /api/projects/{id}/board` (supported compatibility full-board route)
 
 Use the `assignee` query parameter with `me`, `unassigned`, or a positive user ID string. Surrounding whitespace is trimmed; sentinels are otherwise case-sensitive. Invalid values return HTTP **400** with code `VALIDATION_ERROR`, `details.reason: "invalid_assignee"`, and `details.field: "assignee"`—they never disable the filter or return an unfiltered board. `me` also returns that validation error when the REST request has no authenticated actor. A valid unknown/non-member user ID returns an empty board without revealing membership.
 
 Assignee filtering is API/MCP-only in this release. The SPA router and board filter controls do not yet preserve or apply `?assignee=...` from browser URLs.
+
+---
+
+## REST: Board read compatibility and migration
+
+`GET /api/projects/{id}/board` is a supported compatibility endpoint in the current unversioned REST API. It is **not deprecated**, has no scheduled removal, and intentionally returns the complete matching board without `columnsMeta`. New clients should prefer the bounded, slug-based board reads:
+
+- `GET /api/board/{slug}` returns the initial page for every lane plus per-lane `columnsMeta`.
+- `GET /api/board/{slug}/lanes/{status}` follows a lane's opaque `nextCursor`.
+
+Clients can obtain a project's numeric `id` and canonical `slug` together from `GET /api/projects` or project creation. The numeric board response also includes `project.slug`, allowing an existing client to migrate without a separate lookup.
+
+To reproduce the numeric endpoint's unpaged `columns` result, pass the same `tag`, `search`, `assignee`, `sprintId`, and `sort` values to the initial slug request and every lane request. For each lane in `columnOrder`, append its initial items, then request lane pages with `afterCursor=columnsMeta[status].nextCursor` until `hasMore` is false. Preserve page order and do not parse cursor values. Clients may then discard the pagination metadata or adopt the paged contract directly.
+
+The numeric compatibility route is available only in Full Mode and remains hidden in Anonymous Mode. Slug board routes retain their existing Durable, active Temporary Board, and Anonymous Board access behavior.
 
 ---
 
@@ -590,6 +720,15 @@ Some handlers return **`FORBIDDEN`** with a clear message where **`mapStoreError
 ---
 
 ## Notes and guarantees
+
+**Backup 1.1 priority presence:** new exports always emit project
+`priorityTiers` and todo `priorityKey`. `priorityTiers: []` means the canonical
+default tier set and `priorityKey: null` means intentionally unprioritized.
+For matched-project merge, absence of either field identifies legacy/patch
+input and preserves the existing target value; strings assign against the
+effective project tier set. `priorityTiers: null` is invalid. New and
+replace-mode projects with absent legacy definitions receive defaults. Import
+commits only if every non-null todo key resolves to a tier in the same project.
 
 1. **Public identifiers first:** Mutations and reads are keyed by **`projectSlug`**, **`localId`**, and similar fields - not internal numeric ids for todos or projects in MCP command shapes (except `projectId` on list output as noted).
 2. **Capabilities match implementation:** `implementedTools` is the authoritative list of POST tool names.

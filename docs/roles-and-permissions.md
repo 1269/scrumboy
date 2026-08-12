@@ -42,6 +42,9 @@
 | Add/remove members             | Maintainer+   | Last maintainer cannot be removed      |
 | List available users (add UI)  | Maintainer+   |                                        |
 | Sprints CRUD (create/activate/close) | Maintainer+ | Via board settings                      |
+| List priority tiers              | Viewer+       | Same definitions shown on the board     |
+| Create/update/delete priority tiers | Maintainer+ | Last and in-use tiers cannot be deleted |
+| Assign/clear todo priority       | Maintainer    | Key must belong to the todo's project   |
 
 ---
 
@@ -64,7 +67,13 @@ Permissions flow: `permissions.go` → store enforcement → API error mapping �
 - Assignment: not allowed (validation error)
 - Project image, delete project: immutable (404)
 
-**Expiration:** Temporary boards use `expires_at` (initially 90 days from creation; board activity can roll the expiry forward). Once `expires_at` is in the past, board reads and mutations return **404** until the project row is removed. This applies to authenticated temporary boards in full mode as well as unowned anonymous boards.
+**Expiration:** Temporary boards use `expires_at` (initially 90 days from
+creation; board activity can roll the expiry forward). Read-triggered activity
+refresh is throttled and best-effort, so a successful board response does not
+guarantee that the maintenance write persisted; failures are logged by the
+server. Once `expires_at` is in the past, board reads and mutations return
+**404** until the project row is removed. This applies to authenticated
+temporary boards in full mode as well as unowned anonymous boards.
 
 **UI:** New Todo and drag-and-drop are enabled for anonymous boards (same as Maintainer on durable boards).
 
@@ -95,12 +104,13 @@ This table is **Settings tab visibility** in the SPA (`modules/dialogs/settings.
 | Users | Full mode **and** system role Admin or Owner |
 | Sprints | Board view (`slug` set) **and** project role Maintainer |
 | Workflow | Board view **and** project role Maintainer |
+| Priorities | Board view **and** project role Maintainer |
 | Customization | Always when Settings is open |
 | Tag Colors | Always when Settings is open (replaces older “Tags” label) |
 | Charts | Board view, full mode, **and** durable project (not temporary/anonymous expiry boards) |
 | Backup | Always when Settings is open |
 
-Contributor/Viewer on a durable board typically see Customization, Tag Colors, Charts, and Backup (not Sprints/Workflow). Anonymous/temporary boards omit Charts; Profile/Users require full mode.
+Contributor/Viewer on a durable board typically see Customization, Tag Colors, Charts, and Backup (not Sprints/Workflow/Priorities). Anonymous/temporary boards omit Charts; Profile/Users require full mode.
 
 ---
 

@@ -102,6 +102,8 @@ vi.mock("../orchestration/board-refresh.js", () => ({
 
 vi.mock("../sprints.js", () => ({
   normalizeSprints: vi.fn(() => []),
+  boardSprintsEnabled: (board: { project?: { sprintsEnabled?: boolean } } | null | undefined) =>
+    board?.project?.sprintsEnabled !== false,
 }));
 
 vi.mock("./mobile-lane-tabs.js", () => ({
@@ -166,6 +168,7 @@ const enCatalog = {
   "board.backToProjects": "\u2190 Projects",
   "board.filters.all": "All",
   "board.filters.allAssignees": "All assignees",
+  "board.filters.allPriorities": "All priorities",
   "board.filters.assignee": "Assignee",
   "board.filters.assignedToMe": "Assigned to me",
   "board.filters.defaultOrder": "Default order",
@@ -173,9 +176,11 @@ const enCatalog = {
   "board.filters.label": "Tags:",
   "board.filters.newestFirst": "Newest first",
   "board.filters.next": "Next tags",
+  "board.filters.noPriority": "No priority",
   "board.filters.oldestFirst": "Oldest first",
   "board.filters.openFilters": "Filters",
   "board.filters.previous": "Previous tags",
+  "board.filters.priority": "Priority",
   "board.filters.scheduled": "Scheduled",
   "board.filters.sort": "Sort",
   "board.filters.sortedBy": "Sorted: {value}",
@@ -230,6 +235,7 @@ async function renderPrefetchedBoard(
     null,
     null,
     opts.sort ?? null,
+    null,
     null,
     null,
     { prefetchedBoard: board() },
@@ -305,7 +311,7 @@ describe("board i18n locale switching", () => {
     }] as any;
     const mod = await import("./board.js");
 
-    await mod.renderBoard("alpha", "", "needle", null, null, "newest", null, null, {
+    await mod.renderBoard("alpha", "", "needle", null, null, "newest", null, null, null, {
       prefetchedBoard: viewerBoard,
     });
     await flushPromises();
@@ -404,7 +410,7 @@ describe("board i18n locale switching", () => {
     const activeTagChip = document.querySelector("[data-tag='bug']");
     expect(searchInput?.value).toBe("needle");
     expect(activeTagChip?.classList.contains("chip--active")).toBe(true);
-    expect(document.querySelector(".no-results")?.textContent).toBe('No todos found matching "needle"');
+    expect(document.querySelector(".board > .no-results")?.textContent).toBe('No todos found matching "needle"');
 
     await i18n.setLocale("pseudo");
     await flushPromises();
@@ -412,7 +418,7 @@ describe("board i18n locale switching", () => {
     expect((document.getElementById("searchInput") as HTMLInputElement | null)?.value).toBe("needle");
     expect(document.querySelector("[data-tag='bug']")?.classList.contains("chip--active")).toBe(true);
     expect(document.querySelector(".filters__label")?.textContent).toBe("[!! Tags: !!]");
-    expect(document.querySelector(".no-results")?.textContent).toBe('[!! No todos found matching "needle" !!]');
+    expect(document.querySelector(".board > .no-results")?.textContent).toBe('[!! No todos found matching "needle" !!]');
     expect(apiFetchMock).not.toHaveBeenCalled();
   });
 

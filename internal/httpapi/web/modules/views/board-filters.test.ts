@@ -19,6 +19,7 @@ const selectorState: {
 vi.mock('../state/selectors.js', () => ({
   getAssigneeFromUrl: () => new URL(window.location.href).searchParams.get('assignee'),
   getSortFromUrl: () => new URL(window.location.href).searchParams.get('sort'),
+  getPriorityFromUrl: () => new URL(window.location.href).searchParams.get('priority'),
   getBoard: () => selectorState.board,
   getSearch: () => selectorState.search,
   getSlug: () => selectorState.slug,
@@ -156,6 +157,20 @@ describe('board-filters', () => {
     expect(second.chipsUnchanged).toBe(true);
   });
 
+  it('does not render cached sprint chips or selection for a disabled board', async () => {
+    const board = makeBoard();
+    board.project.sprintsEnabled = false;
+    const { boardFilters } = await setupBoardFiltersState('/alpha?sprintId=7', { board });
+    boardFilters.setSprintChipDataForSlug('alpha', {
+      sprints: [{ id: 12, number: 7, name: 'Sprint 7', state: 'ACTIVE' }],
+    });
+
+    const rendered = boardFilters.computeBoardChipsRender(board, '', '7');
+
+    expect(rendered.chipsHTML).not.toContain('data-sprint-id');
+    expect(rendered.chipsHTML).not.toContain('Sprint 7');
+  });
+
   it('non-additive tag chip click clears sprint filter and reloads with the selected tag', async () => {
     const { boardFilters, board } = await setupBoardFiltersState(
       '/alpha?search=query&sprintId=7',
@@ -184,7 +199,7 @@ describe('board-filters', () => {
     expect(params.get('tag')).toBe('bug');
     expect(params.get('sprintId')).toBeNull();
     expect(reloadBoard).toHaveBeenCalledTimes(1);
-    expect(reloadBoard).toHaveBeenCalledWith('alpha', 'bug', 'query', null, null, null);
+    expect(reloadBoard).toHaveBeenCalledWith('alpha', 'bug', 'query', null, null, null, null);
   });
 
   it('additive tag chip click preserves the existing sprint filter', async () => {
@@ -215,7 +230,7 @@ describe('board-filters', () => {
     expect(params.get('tag')).toBe('feature');
     expect(params.get('sprintId')).toBe('7');
     expect(reloadBoard).toHaveBeenCalledTimes(1);
-    expect(reloadBoard).toHaveBeenCalledWith('alpha', 'feature', 'query', '7', null, null);
+    expect(reloadBoard).toHaveBeenCalledWith('alpha', 'feature', 'query', '7', null, null, null);
   });
 
   it('non-additive sprint chip click clears the tag filter and reloads with the sprint number', async () => {
@@ -246,7 +261,7 @@ describe('board-filters', () => {
     expect(params.get('tag')).toBeNull();
     expect(params.get('sprintId')).toBe('3');
     expect(reloadBoard).toHaveBeenCalledTimes(1);
-    expect(reloadBoard).toHaveBeenCalledWith('alpha', '', 'query', '3', null, null);
+    expect(reloadBoard).toHaveBeenCalledWith('alpha', '', 'query', '3', null, null, null);
   });
 
   it('search input debounces reloads, trims the search value, and clear removes the filter', async () => {
@@ -276,7 +291,7 @@ describe('board-filters', () => {
     vi.advanceTimersByTime(1);
     expect(new URL(window.location.href).searchParams.get('search')).toBe('login');
     expect(reloadBoard).toHaveBeenCalledTimes(1);
-    expect(reloadBoard).toHaveBeenLastCalledWith('alpha', 'bug', 'login', '7', null, null);
+    expect(reloadBoard).toHaveBeenLastCalledWith('alpha', 'bug', 'login', '7', null, null, null);
 
     const clearBtn = document.getElementById('searchClear');
     if (!(clearBtn instanceof HTMLElement)) throw new Error('missing search clear button');
@@ -285,7 +300,7 @@ describe('board-filters', () => {
     expect(searchInput.value).toBe('');
     expect(new URL(window.location.href).searchParams.get('search')).toBeNull();
     expect(reloadBoard).toHaveBeenCalledTimes(2);
-    expect(reloadBoard).toHaveBeenLastCalledWith('alpha', 'bug', null, '7', null, null);
+    expect(reloadBoard).toHaveBeenLastCalledWith('alpha', 'bug', null, '7', null, null, null);
   });
 
   it('updates sprint chip state via sprint-updated events without a full board reload', async () => {

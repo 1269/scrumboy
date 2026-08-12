@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildTodoCreatePayload, buildTodoPatchPayload } from "./todo-submit.js";
+import {
+  buildTodoCreatePayload,
+  buildTodoPatchPayload,
+  shouldSubmitSprintAssignment,
+} from "./todo-submit.js";
 
 describe("todo submit payload helpers", () => {
   it("preserves raw markdown in create payloads", () => {
@@ -14,6 +18,7 @@ describe("todo submit payload helpers", () => {
       sprintId: 12,
       assigneeEnabled: true,
       assigneeUserId: 44,
+	  priorityKey: null,
     });
 
     expect(payload).toEqual({
@@ -24,6 +29,7 @@ describe("todo submit payload helpers", () => {
       estimationPoints: 5,
       sprintId: 12,
       assigneeUserId: 44,
+      priorityKey: null,
     });
   });
 
@@ -36,6 +42,7 @@ describe("todo submit payload helpers", () => {
       estimationRaw: "invalid",
       assigneeEnabled: true,
       assigneeUserId: null,
+	  priorityKey: null,
       sprintEnabled: false,
       sprintId: 8,
     });
@@ -45,8 +52,27 @@ describe("todo submit payload helpers", () => {
       body,
       tags: [],
       assigneeUserId: null,
+      priorityKey: null,
     });
     expect(JSON.stringify(payload)).not.toContain("<h2>");
     expect(JSON.stringify(payload)).not.toContain("<strong>");
+  });
+
+  it("includes and normalizes priority selection", () => {
+    expect(buildTodoCreatePayload({
+      title: "Title", body: "", tags: [], columnKey: "backlog", priorityKey: "urgent",
+    }).priorityKey).toBe("urgent");
+    expect(buildTodoPatchPayload({
+      title: "Title", body: "", tags: [], priorityKey: "",
+    }).priorityKey).toBeNull();
+  });
+
+  it("submits sprint assignment only when enabled controls change the value", () => {
+    expect(shouldSubmitSprintAssignment(false, 8, null)).toBe(false);
+    expect(shouldSubmitSprintAssignment(true, null, null)).toBe(false);
+    expect(shouldSubmitSprintAssignment(true, 8, 8)).toBe(false);
+    expect(shouldSubmitSprintAssignment(true, 8, null)).toBe(true);
+    expect(shouldSubmitSprintAssignment(true, null, 8)).toBe(true);
+    expect(shouldSubmitSprintAssignment(true, 8, 9)).toBe(true);
   });
 });

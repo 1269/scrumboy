@@ -9,11 +9,20 @@ export type TodoBasePayloadInput = {
   sprintId?: number | null;
   assigneeEnabled?: boolean;
   assigneeUserId?: number | null;
+  priorityKey?: string | null;
 };
 
 export type TodoCreatePayloadInput = TodoBasePayloadInput & {
   columnKey: string;
 };
+
+export function shouldSubmitSprintAssignment(
+  sprintControlsEnabled: boolean,
+  currentSprintId: number | null | undefined,
+  nextSprintId: number | null,
+): boolean {
+  return sprintControlsEnabled && (currentSprintId ?? null) !== nextSprintId;
+}
 
 function appendOptionalFields(
   payload: Record<string, unknown>,
@@ -34,6 +43,7 @@ function appendOptionalFields(
   if (input.assigneeEnabled) {
     payload.assigneeUserId = input.assigneeUserId ?? null;
   }
+  payload.priorityKey = input.priorityKey || null;
   return payload;
 }
 

@@ -5,10 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net/http"
 	"strings"
-	"time"
 
+	boardapp "scrumboy/internal/application/board"
+	membershipapp "scrumboy/internal/application/membership"
+	priorityapp "scrumboy/internal/application/priority"
+	sprintapp "scrumboy/internal/application/sprint"
+	todoapp "scrumboy/internal/application/todo"
+	todolinkapp "scrumboy/internal/application/todolink"
+	workflowapp "scrumboy/internal/application/workflow"
 	"scrumboy/internal/publicorigin"
 	"scrumboy/internal/store"
 )
@@ -19,28 +27,24 @@ type storeAPI interface {
 	GetUserByAPIToken(ctx context.Context, rawToken string) (store.User, error)
 	GetUserByOAuthAccessToken(ctx context.Context, rawToken, expectedResource string) (store.User, error)
 	ListProjects(ctx context.Context) ([]store.ProjectListEntry, error)
-	GetProjectContextBySlug(ctx context.Context, slug string, mode store.Mode) (store.ProjectContext, error)
-	CreateTodo(ctx context.Context, projectID int64, in store.CreateTodoInput, mode store.Mode) (store.Todo, error)
-	GetTodoByLocalID(ctx context.Context, projectID, localID int64, mode store.Mode) (store.Todo, error)
+	todoapp.MCPMoveAccessStore
+	todoapp.CreateStore
+	todoapp.MCPMoveLookupStore
 	SearchTodosForLinkPicker(ctx context.Context, projectID int64, q string, limit int, excludeLocalIDs []int64, mode store.Mode) ([]store.TodoLinkTarget, error)
-	AddLink(ctx context.Context, projectID, fromLocalID, toLocalID int64, linkType string, mode store.Mode) error
-	RemoveLink(ctx context.Context, projectID, fromLocalID, toLocalID int64, mode store.Mode) error
-	ListLinksForTodo(ctx context.Context, projectID, localID int64, mode store.Mode) ([]store.TodoLinkTarget, error)
-	ListBacklinksForTodo(ctx context.Context, projectID, localID int64, mode store.Mode) ([]store.TodoLinkTarget, error)
-	UpdateTodoByLocalID(ctx context.Context, projectID, localID int64, in store.UpdateTodoInput, mode store.Mode) (store.Todo, error)
+	todolinkapp.MutationStore
+	todolinkapp.LinkReadStore
+	todoapp.UpdateStore
 	DeleteTodoByLocalID(ctx context.Context, projectID, localID int64, mode store.Mode) error
-	MoveTodoByLocalID(ctx context.Context, projectID, localID int64, toColumnKey string, afterLocalID, beforeLocalID *int64, mode store.Mode) (store.Todo, error)
-	ListTodosForBoardLane(ctx context.Context, projectID int64, columnKey string, limit int, afterA, afterB int64, tagFilter, searchFilter string, assigneeFilter store.AssigneeFilter, sprintFilter store.SprintFilter, sortOrder store.SortOrder) ([]store.Todo, string, bool, error)
+	todoapp.MoveStore
+	todoapp.MCPMoveLaneStore
 	ListSprintsWithTodoCount(ctx context.Context, projectID int64) ([]store.SprintWithTodoCount, error)
 	CountUnscheduledTodos(ctx context.Context, projectID int64) (int64, error)
+	sprintapp.DefinitionStore
+	sprintapp.TransitionStore
+	sprintapp.DeletionStore
 	GetSprintByID(ctx context.Context, sprintID int64) (store.Sprint, error)
 	GetActiveSprintByProjectID(ctx context.Context, projectID int64) (*store.Sprint, error)
-	CreateSprint(ctx context.Context, projectID int64, name string, plannedStartAt, plannedEndAt time.Time) (store.Sprint, error)
 	GetProjectRole(ctx context.Context, projectID int64, userID int64) (store.ProjectRole, error)
-	ActivateSprint(ctx context.Context, projectID, sprintID int64) error
-	CloseSprint(ctx context.Context, sprintID int64) error
-	UpdateSprint(ctx context.Context, sprintID int64, in store.UpdateSprintInput) error
-	DeleteSprint(ctx context.Context, projectID, sprintID int64) error
 	ListTagCounts(ctx context.Context, pc *store.ProjectContext) ([]store.TagCount, error)
 	ListUserTags(ctx context.Context, userID int64) ([]store.TagWithColor, error)
 	UpdateTagColor(ctx context.Context, viewerUserID *int64, tagID int64, color *string) error
@@ -51,14 +55,12 @@ type storeAPI interface {
 	GetProjectScopedTagByID(ctx context.Context, projectID, tagID int64) (store.TagWithColor, error)
 	ListProjectMembers(ctx context.Context, projectID int64, userID int64) ([]store.ProjectMember, error)
 	ListAvailableUsersForProject(ctx context.Context, requesterID, projectID int64) ([]store.User, error)
-	AddProjectMember(ctx context.Context, requesterID, projectID, targetUserID int64, role store.ProjectRole) error
-	UpdateProjectMemberRole(ctx context.Context, requesterID, projectID, targetUserID int64, role store.ProjectRole) error
-	RemoveProjectMember(ctx context.Context, requesterID, projectID, targetUserID int64) error
+	membershipapp.MutationStore
 	GetProjectWorkflow(ctx context.Context, projectID int64) ([]store.WorkflowColumn, error)
-	AddWorkflowColumn(ctx context.Context, projectID int64, name string) (store.WorkflowColumn, error)
-	UpdateWorkflowColumn(ctx context.Context, projectID int64, key, name, color string) error
-	DeleteWorkflowColumn(ctx context.Context, projectID int64, key string) error
-	CountTodosForBoardLane(ctx context.Context, projectID int64, columnKey string, tagFilter string, searchFilter string, assigneeFilter store.AssigneeFilter, sprintFilter store.SprintFilter) (int, error)
+	workflowapp.MutationStore
+	priorityapp.MutationStore
+	GetProjectPriorities(ctx context.Context, projectID int64) ([]store.PriorityTier, error)
+	CountTodosForBoardLane(ctx context.Context, projectID int64, columnKey string, tagFilter string, searchFilter string, assigneeFilter store.AssigneeFilter, priorityFilter store.PriorityFilter, sprintFilter store.SprintFilter) (int, error)
 	UpdateBoardActivity(ctx context.Context, projectID int64) error
 	CreateProject(ctx context.Context, name string) (store.Project, error)
 	GetProject(ctx context.Context, projectID int64) (store.Project, error)
@@ -81,13 +83,27 @@ type storeAPI interface {
 type Options struct {
 	Mode         string
 	PublicOrigin *publicorigin.Resolver
+	Logger       *log.Logger
 }
 
 type Adapter struct {
-	store        storeAPI
-	mode         string
-	tools        toolRegistry
-	publicOrigin *publicorigin.Resolver
+	store               storeAPI
+	boardReads          *boardapp.MCPBoardReadService
+	todoCreates         *todoapp.MCPCreateService
+	todoDeletes         *todoapp.MCPDeleteService
+	todoMoves           *todoapp.MCPMoveService
+	todoUpdates         *todoapp.MCPUpdateService
+	todoLinkMutations   *todolinkapp.MCPMutationService
+	workflowMutations   *workflowapp.MCPMutationService
+	priorityMutations   *priorityapp.MCPMutationService
+	membershipMutations *membershipapp.MCPMutationService
+	sprintDefinitions   *sprintapp.MCPDefinitionService
+	sprintLifecycle     *sprintapp.MCPLifecycleService
+	sprintDeletions     *sprintapp.MCPDeletionService
+	mode                string
+	tools               toolRegistry
+	publicOrigin        *publicorigin.Resolver
+	logger              *log.Logger
 }
 
 func New(st storeAPI, opts Options) *Adapter {
@@ -99,15 +115,98 @@ func New(st storeAPI, opts Options) *Adapter {
 	if resolver == nil {
 		resolver = publicorigin.New("", false)
 	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = log.New(io.Discard, "", 0)
+	}
 
 	a := &Adapter{
-		store:        st,
+		store: st,
+		boardReads: boardapp.NewMCPBoardReadService(boardapp.MCPBoardReadServiceDependencies{
+			Access:   st,
+			Sprints:  st,
+			Workflow: st,
+			Lanes:    st,
+			Activity: st,
+			ReportActivityRefreshFailure: func(_ context.Context, projectID int64, err error) {
+				logger.Printf("mcp: board activity refresh failed project_id=%d: %v", projectID, err)
+			},
+		}),
+		todoCreates: todoapp.NewMCPCreateService(todoapp.MCPCreateServiceDependencies{
+			Access: st,
+			Lookup: st,
+			Create: st,
+		}),
+		todoDeletes: todoapp.NewMCPDeleteService(todoapp.MCPDeleteServiceDependencies{
+			Access: st,
+			Delete: st,
+		}),
+		todoMoves: todoapp.NewMCPMoveService(todoapp.MCPMoveServiceDependencies{
+			Access: st,
+			Lookup: st,
+			Lanes:  st,
+			Move:   st,
+		}),
+		todoUpdates: todoapp.NewMCPUpdateService(todoapp.MCPUpdateServiceDependencies{
+			Access: st,
+			Lookup: st,
+			Update: st,
+		}),
+		todoLinkMutations: todolinkapp.NewMCPMutationService(todolinkapp.MCPMutationServiceDependencies{
+			Access:    st,
+			Sources:   st,
+			Mutations: st,
+			Links:     st,
+		}),
+		workflowMutations: workflowapp.NewMCPMutationService(workflowapp.MCPMutationServiceDependencies{
+			Access:    st,
+			Mutations: st,
+			Workflow:  st,
+		}),
+		priorityMutations: priorityapp.NewMCPMutationService(priorityapp.MCPMutationServiceDependencies{
+			Access: st, Mutations: st, Priority: st,
+		}),
+		membershipMutations: membershipapp.NewMCPMutationService(membershipapp.MCPMutationServiceDependencies{
+			Access:    st,
+			Mutations: st,
+			Members:   st,
+		}),
+		sprintDefinitions: sprintapp.NewMCPDefinitionService(sprintapp.MCPDefinitionServiceDependencies{
+			Access:      st,
+			Roles:       st,
+			Definitions: st,
+			Sprints:     st,
+		}),
+		sprintLifecycle: sprintapp.NewMCPLifecycleService(sprintapp.MCPLifecycleServiceDependencies{
+			Access:      st,
+			Roles:       st,
+			Sprints:     st,
+			Transitions: st,
+		}),
+		sprintDeletions: sprintapp.NewMCPDeletionService(sprintapp.MCPDeletionServiceDependencies{
+			Access:    st,
+			Roles:     st,
+			Sprints:   st,
+			Deletions: st,
+		}),
 		mode:         mode,
 		tools:        make(toolRegistry),
 		publicOrigin: resolver,
+		logger:       logger,
 	}
 	a.registerTools()
 	return a
+}
+
+func (a *Adapter) logAdapterError(transport, tool string, err *adapterError) {
+	if err == nil || err.Code != CodeInternal {
+		return
+	}
+	if err.Cause != nil {
+		a.logger.Printf("mcp: internal error transport=%s tool=%s: %v", transport, tool, err.Cause)
+		return
+	}
+	a.logger.Printf("mcp: internal error transport=%s tool=%s: %s", transport, tool, err.Message)
 }
 
 // parseBearerAuthorization parses Authorization: Bearer. The credential is the segment after the first
@@ -280,6 +379,10 @@ func (a *Adapter) implementedTools() []string {
 		"workflow_create",
 		"workflow_update",
 		"workflow_delete",
+		"priorities_list",
+		"priorities_create",
+		"priorities_update",
+		"priorities_delete",
 		"dashboard_getSummary",
 		"dashboard_listTodos",
 		"metrics_getBurndown",

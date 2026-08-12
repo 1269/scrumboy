@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"time"
 
 	"scrumboy/internal/errs"
@@ -14,6 +15,7 @@ var (
 	ErrForbidden                  = errs.ErrForbidden
 	ErrTooManyAttempts            = errs.ErrTooManyAttempts
 	Err2FAEncryptionNotConfigured = errs.Err2FAEncryptionNotConfigured
+	ErrSprintsDisabled            = errors.New("sprints are disabled for this project")
 )
 
 const (
@@ -100,6 +102,16 @@ type WorkflowColumn struct {
 	System    bool
 }
 
+// PriorityTier defines one ordered, per-project priority level for todos.
+type PriorityTier struct {
+	ID        int64
+	ProjectID int64
+	Key       string
+	Name      string
+	Color     string
+	Position  int
+}
+
 // SprintFilter represents the sprint filter for board queries.
 // Mode:
 // - "none" = no filter
@@ -131,6 +143,24 @@ type AssigneeFilter struct {
 	userID int64
 }
 
+type priorityFilterMode uint8
+
+const (
+	priorityFilterNone priorityFilterMode = iota
+	priorityFilterNoPriority
+	priorityFilterKey
+)
+
+// PriorityFilter represents a validated board priority filter.
+//
+// Its zero value applies no priority filter. The internal fields deliberately
+// remain opaque so callers must use ParsePriorityFilter and cannot construct an
+// invalid mode.
+type PriorityFilter struct {
+	mode priorityFilterMode
+	key  string
+}
+
 // SortOrder represents the board todo ordering within each lane.
 //
 // The zero value (SortOrderDefault) preserves today's manual drag-rank order
@@ -159,6 +189,7 @@ type Project struct {
 	DominantColor      string
 	EstimationMode     string
 	DefaultSprintWeeks int
+	SprintsEnabled     bool
 	Slug               string
 	OwnerUserID        *int64 // NULL for unowned boards (Temporary and Anonymous Boards); set for Durable Projects
 	// CreatorUserID represents who created the project at creation time.
@@ -259,6 +290,7 @@ type Todo struct {
 	EstimationPoints *int64
 	AssigneeUserID   *int64
 	SprintID         *int64 // NULL = backlog; non-NULL = in that sprint
+	PriorityKey      *string
 	Tags             []string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time

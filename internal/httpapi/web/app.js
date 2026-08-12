@@ -6,7 +6,7 @@
 // - dist/**/*.js is emitted runtime/build output, not the primary editing target.
 // - source-side modules/**/*.js mirrors are unsupported and should not exist or be recreated.
 
-import { app, toast, todoDialog, todoForm, todoDialogTitle, todoTitle, todoBody, todoTags, todoStatus, todoEstimationPoints, deleteTodoBtn, closeTodoBtn, settingsDialog, closeSettingsBtn } from './dist/dom/elements.js';
+import { app, toast, todoDialog, todoForm, todoDialogTitle, todoTitle, todoBody, todoTags, todoStatus, todoEstimationPoints, todoPriority, deleteTodoBtn, closeTodoBtn, settingsDialog, closeSettingsBtn } from './dist/dom/elements.js';
 import { initTheme, handleThemeChange, getStoredTheme, THEME_SYSTEM, THEME_DARK, THEME_LIGHT } from './dist/theme.js';
 import { escapeHTML, showToast, showConfirmDialog } from './dist/utils.js';
 import { apiFetch } from './dist/api.js';
@@ -14,7 +14,7 @@ import { navigate, router } from './dist/router.js';
 import { getRoute, getProjectId, getBoard, getAuthStatusAvailable, getMobileTab, getSlug, getTag, getSearch, getSprintIdFromUrl, getProjectView, getProjectsTab, getProjects, getSettingsProjectId, getEditingTodo, getAvailableTags, getAutocompleteSuggestion, getAvailableTagsMap, getTagColors, getUser, getSettingsActiveTab, getBackupImportBtn, getBackupData, getBackupPreview, getAuthStatusChecked } from './dist/state/selectors.js';
 import { setProjectId, setBoard, setSlug, setTag, setMobileTab, setProjects, setProjectsTab, setProjectView, setEditingTodo, setAvailableTags, setAvailableTagsMap, setAutocompleteSuggestion, setTagColors, setSettingsProjectId, setSettingsActiveTab, setBackupImportBtn, setBackupData, setBackupPreview } from './dist/state/mutations.js';
 import { openTodoDialog, renderTagsChips, setupTagAutocomplete, removeTag, renderTagAutocomplete, getTagsFromChips, resetAssigneeSelect, getTodoFormPermissions, requestTodoDialogClose } from './dist/dialogs/todo.js';
-import { buildTodoCreatePayload, buildTodoPatchPayload } from './dist/dialogs/todo-submit.js';
+import { buildTodoCreatePayload, buildTodoPatchPayload, shouldSubmitSprintAssignment } from './dist/dialogs/todo-submit.js';
 import { renderSettingsModal, invalidateTagsCache, resumeAuthenticationMethodFlow } from './dist/dialogs/settings.js';
 import { initDnD, columnsSpec, dragInProgress, dragJustEnded } from './dist/features/drag-drop.js';
 import { setupContextMenuCloseHandler } from './dist/features/context-menu.js';
@@ -26,6 +26,7 @@ import { initKeybindings } from './dist/core/keybindings.js';
 import { initModalOutsideClickClose } from './dist/core/modal-outside-click.js';
 import { I18N_LOCALE_CHANGED, apiErrorMessage, hydrateI18n, initI18n, t } from './dist/i18n/index.js';
 import { installI18nQa } from './dist/i18n/qa.js';
+import { boardSprintsEnabled } from './dist/sprints.js';
 
 let tagInputHandlersSetup = false;
 
@@ -150,10 +151,11 @@ todoForm.addEventListener("submit", async (e) => {
   const tags = getTagsFromChips();
   const columnKey = todoStatus.value;
   const estimationRaw = todoEstimationPoints?.value ?? "";
+  const priorityKey = todoPriority?.value ?? "";
 
   const sprintEl = document.getElementById("todoSprint");
   const sprintField = document.getElementById("todoSprintField");
-  const showSprint = sprintEl && sprintField && sprintField.style.display !== "none";
+  const showSprint = boardSprintsEnabled(getBoard()) && sprintEl && sprintField && sprintField.style.display !== "none";
   const sprintId = showSprint && sprintEl.value !== "" ? Number(sprintEl.value) : null;
 
   try {
@@ -173,8 +175,9 @@ todoForm.addEventListener("submit", async (e) => {
         estimationRaw,
         assigneeEnabled: !!assigneeEl,
         assigneeUserId,
-        sprintEnabled: !!showSprint,
+        sprintEnabled: shouldSubmitSprintAssignment(!!showSprint, todo.sprintId, sprintId),
         sprintId,
+		priorityKey,
       });
       recordLocalMutation();
       await apiFetch(`/api/board/${getSlug()}/todos/${todo.localId}`, {
@@ -205,6 +208,7 @@ todoForm.addEventListener("submit", async (e) => {
         sprintId,
         assigneeEnabled: !!assigneeEl,
         assigneeUserId,
+		priorityKey,
       });
       recordLocalMutation();
       await apiFetch(`/api/board/${getSlug()}/todos`, {
