@@ -20,6 +20,7 @@ export interface Todo {
   tags?: string[];
   estimationPoints?: number | null;
   assigneeUserId?: number | null;
+  createdByUserId?: number | null;
   sprintId?: number | null;
   priorityKey?: string | null;
   createdAt?: string;
@@ -193,9 +194,10 @@ export interface WebPushStatus {
 }
 
 export interface EmailNotifyPref {
-  v: 1;
+  v: 2;
   enabled: boolean;
   assigned: boolean;
+  createdByMe: boolean;
   cardActivity: boolean;
   sprintActivity: boolean;
   projectActivity: boolean;

@@ -47,7 +47,7 @@ func newLegacyTodoMutationFixture(t *testing.T, mode string) *legacyTodoMutation
 	st := store.New(sqlDB, nil)
 	collector := &collectingConsumer{}
 	srv := NewServer(st, Options{MaxRequestBody: 1 << 20, ScrumboyMode: mode})
-	srv.fanout = eventbus.NewFanout(newSSEBridge(srv.hub), collector)
+	srv.fanout = eventbus.NewFanout(newSSEBridge(srv.hub, srv.creatorNotificationAuthorizer), collector)
 	st.SetTodoAssignedPublisher(srv.PublishTodoAssigned)
 	ts := httptest.NewServer(srv)
 
@@ -198,6 +198,55 @@ func legacyTodoAssertOneRefresh(t *testing.T, fixture *legacyTodoMutationFixture
 	if payload.Reason != reason || payload.ActorUserID != actorID {
 		t.Fatalf("refresh payload=%+v, want reason=%q actor=%d", payload, reason, actorID)
 	}
+}
+
+func legacyTodoAssertRefreshAndCreatorRequest(
+	t *testing.T,
+	fixture *legacyTodoMutationFixture,
+	projectID int64,
+	reason string,
+	refreshActorID int64,
+) eventbus.TodoCreatorNotificationRequestedPayload {
+	t.Helper()
+	events := legacyTodoEventsForProject(fixture, projectID)
+	if len(events) != 3 ||
+		events[0].Type != eventbus.TodoCreatorNotificationRequestedEventType ||
+		events[1].Type != eventbus.TodoCreatorNotificationRecipientAuthorizedEventType ||
+		events[2].Type != "board.refresh_needed" {
+		t.Fatalf("events=%+v, want creator request, authorized recipient, then one board.refresh_needed", events)
+	}
+	var request eventbus.TodoCreatorNotificationRequestedPayload
+	if err := json.Unmarshal(events[0].Payload, &request); err != nil {
+		t.Fatalf("decode creator request payload: %v", err)
+	}
+	var authorized eventbus.TodoCreatorNotificationRecipientAuthorizedPayload
+	if err := json.Unmarshal(events[1].Payload, &authorized); err != nil {
+		t.Fatalf("decode authorized creator recipient payload: %v", err)
+	}
+	if authorized.ProjectID != request.ProjectID ||
+		authorized.ProjectSlug != request.ProjectSlug ||
+		authorized.TodoID != request.TodoID ||
+		authorized.LocalID != request.LocalID ||
+		authorized.Title != request.Title ||
+		authorized.ActivityReason != request.ActivityReason ||
+		authorized.RecipientUserID != request.CreatedByUserID ||
+		authorized.ActorUserID != request.ActorUserID ||
+		authorized.MaterialChanged != request.MaterialChanged ||
+		authorized.AssignmentChanged != request.AssignmentChanged ||
+		authorized.CardActivityCandidate != request.CardActivityCandidate {
+		t.Fatalf("authorized payload=%+v does not match request=%+v", authorized, request)
+	}
+	if !request.MaterialChanged || !request.CardActivityCandidate {
+		t.Fatalf("legacy mutation lost email policy facts: %+v", request)
+	}
+	var refresh legacyTodoRefreshPayload
+	if err := json.Unmarshal(events[2].Payload, &refresh); err != nil {
+		t.Fatalf("decode refresh payload: %v", err)
+	}
+	if refresh.Reason != reason || refresh.ActorUserID != refreshActorID {
+		t.Fatalf("refresh payload=%+v, want reason=%q actor=%d", refresh, reason, refreshActorID)
+	}
+	return request
 }
 
 func legacyTodoAssertNoEvents(t *testing.T, fixture *legacyTodoMutationFixture, projectID int64) {
@@ -394,6 +443,9 @@ func legacyTodoAssertProjectionIdentity(t *testing.T, got todoJSON, want store.T
 	t.Helper()
 	if got.ID != want.ID || got.ProjectID != want.ProjectID || got.LocalID != want.LocalID {
 		t.Fatalf("projection identity=%+v, want global=%d project=%d local=%d", got, want.ID, want.ProjectID, want.LocalID)
+	}
+	if (got.CreatedByUserId == nil) != (want.CreatedByUserID == nil) || (got.CreatedByUserId != nil && *got.CreatedByUserId != *want.CreatedByUserID) {
+		t.Fatalf("projection createdByUserId=%v, want %v", got.CreatedByUserId, want.CreatedByUserID)
 	}
 }
 
