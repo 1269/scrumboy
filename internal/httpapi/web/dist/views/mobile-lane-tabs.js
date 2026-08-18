@@ -32,7 +32,8 @@ export function applyMobileLaneTabStyles(el, c, role) {
  * Keys are escaped in attributes; `id="tab_drop_*"` uses raw keys (same as legacy template).
  */
 export function buildMobileTabsInnerHtml(boardCols, opts) {
-    const tabs = boardCols
+    const extra = opts.extraTabs ?? [];
+    const tabs = [...extra, ...boardCols]
         .map((c) => {
         const { tab } = mobileLaneTabStyleAttrForHtml(c);
         const active = opts.activeTabKey === c.key ? "mobile-tab--active" : "";

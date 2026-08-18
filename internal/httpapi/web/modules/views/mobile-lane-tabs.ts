@@ -35,6 +35,8 @@ export type BuildMobileTabsInnerHtmlOpts = {
   activeTabKey: string | null | undefined;
   /** Full visible label for the tab, e.g. "Doing 3". */
   laneLabel: (key: string) => string;
+  /** Extra tabs (e.g. Agenda) with no Sortable drop zone. */
+  extraTabs?: MobileLaneColumn[];
 };
 
 /**
@@ -42,7 +44,8 @@ export type BuildMobileTabsInnerHtmlOpts = {
  * Keys are escaped in attributes; `id="tab_drop_*"` uses raw keys (same as legacy template).
  */
 export function buildMobileTabsInnerHtml(boardCols: MobileLaneColumn[], opts: BuildMobileTabsInnerHtmlOpts): string {
-  const tabs = boardCols
+  const extra = opts.extraTabs ?? [];
+  const tabs = [...extra, ...boardCols]
     .map((c) => {
       const { tab } = mobileLaneTabStyleAttrForHtml(c);
       const active = opts.activeTabKey === c.key ? "mobile-tab--active" : "";

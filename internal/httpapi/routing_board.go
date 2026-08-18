@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	calendarapp "scrumboy/internal/application/calendar"
 	priorityapp "scrumboy/internal/application/priority"
 	sprintapp "scrumboy/internal/application/sprint"
 	todoapp "scrumboy/internal/application/todo"
@@ -88,6 +89,9 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, rest []stri
 	if s.handleBoardReadEventsAndSettings(w, r, rest, &pc) {
 		return
 	}
+	if s.handleBoardCalendarRoutes(w, r, rest, &pc) {
+		return
+	}
 	if s.handleBoardWorkflowRoutes(w, r, rest, &pc) {
 		return
 	}
@@ -145,13 +149,15 @@ func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http
 		}
 
 		var in struct {
-			DefaultSprintWeeks *int  `json:"defaultSprintWeeks"`
-			SprintsEnabled     *bool `json:"sprintsEnabled"`
+			DefaultSprintWeeks *int    `json:"defaultSprintWeeks"`
+			SprintsEnabled     *bool   `json:"sprintsEnabled"`
+			AgendaEnabled      *bool   `json:"agendaEnabled"`
+			AgendaTimezone     *string `json:"agendaTimezone"`
 		}
 		if err := readJSON(w, r, s.maxBody, &in); err != nil {
 			return true
 		}
-		if in.DefaultSprintWeeks == nil && in.SprintsEnabled == nil {
+		if in.DefaultSprintWeeks == nil && in.SprintsEnabled == nil && in.AgendaEnabled == nil && in.AgendaTimezone == nil {
 			writeValidationError(w, "defaultSprintWeeks required", "default_sprint_weeks_required", map[string]any{"field": "defaultSprintWeeks"})
 			return true
 		}
@@ -161,6 +167,23 @@ func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http
 		}
 
 		resp := map[string]any{}
+		if in.AgendaEnabled != nil || in.AgendaTimezone != nil {
+			prepared, err := s.calendarSources.Prepare(ctx, calendarapp.ResolvedRESTTarget{ProjectID: project.ID})
+			if err != nil {
+				writeCalendarPrepareError(w, err)
+				return true
+			}
+			view, err := prepared.PatchSettings(calendarapp.PatchSettingsCommand{
+				Enabled:  in.AgendaEnabled,
+				Timezone: in.AgendaTimezone,
+			})
+			if err != nil {
+				writeStoreErr(w, err, true)
+				return true
+			}
+			resp["agendaEnabled"] = view.Enabled
+			resp["agendaTimezone"] = view.Timezone
+		}
 		if in.DefaultSprintWeeks != nil {
 			if project.DefaultSprintWeeks != *in.DefaultSprintWeeks {
 				if err := s.store.UpdateProjectDefaultSprintWeeks(ctx, project.ID, userID, *in.DefaultSprintWeeks); err != nil {

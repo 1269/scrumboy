@@ -12,6 +12,7 @@ import (
 	"time"
 
 	boardapp "scrumboy/internal/application/board"
+	calendarapp "scrumboy/internal/application/calendar"
 	membershipapp "scrumboy/internal/application/membership"
 	priorityapp "scrumboy/internal/application/priority"
 	sprintapp "scrumboy/internal/application/sprint"
@@ -103,6 +104,10 @@ type Options struct {
 	// overwrites or strips client-supplied XFF. Without PublicBaseURL, OAuth
 	// discovery also requires forwarded HTTPS and an explicit X-Forwarded-Host.
 	TrustProxy bool
+
+	// CalendarFeedFetcher overrides ICS feed HTTP fetches. Tests inject fakes
+	// so board GET and refresh can assert zero or controlled network use.
+	CalendarFeedFetcher calendarapp.FeedFetcher
 }
 
 type Server struct {
@@ -122,6 +127,8 @@ type Server struct {
 	sprintDeletions               *sprintapp.RESTDeletionService
 	workflowMutations             *workflowapp.RESTMutationService
 	priorityMutations             *priorityapp.RESTMutationService
+	calendarSources               *calendarapp.RESTService
+	agenda                        *calendarapp.AgendaService
 	membershipMutations           *membershipapp.RESTMutationService
 
 	logger                  *log.Logger
@@ -248,6 +255,8 @@ type storeAPI interface {
 	UpdateProjectSprintsEnabled(ctx context.Context, projectID int64, userID int64, enabled bool) error
 	workflowapp.MutationStore
 	priorityapp.MutationStore
+	calendarapp.SourceStore
+	calendarapp.SnapshotStore
 	membershipapp.MutationStore
 	CountTodosByColumnKey(ctx context.Context, projectID int64) (map[string]int, error)
 	CountTodosByPriorityKey(ctx context.Context, projectID int64) (map[string]int, error)
@@ -347,6 +356,8 @@ type storeAPI interface {
 	DeleteRecoveryCodesByUser(ctx context.Context, userID int64) error
 	EncryptTOTPSecret(plaintext []byte) (string, error)
 	DecryptTOTPSecret(encrypted string) ([]byte, error)
+	EncryptSecret(plaintext []byte) (string, error)
+	DecryptSecret(encrypted string) ([]byte, error)
 
 	// Webhooks
 	CreateWebhook(ctx context.Context, userID int64, in store.CreateWebhookInput) (store.Webhook, error)
@@ -676,6 +687,28 @@ func NewServer(st storeAPI, opts Options) *Server {
 		Refresh: priorityapp.BoardRefreshPublisherFunc(func(ctx context.Context, projectID int64, reason string) {
 			server.emitRefreshNeeded(ctx, projectID, reason)
 		}),
+	})
+	refreshPublisher := calendarapp.BoardRefreshPublisherFunc(func(ctx context.Context, projectID int64, reason string) {
+		server.emitRefreshNeeded(ctx, projectID, reason)
+	})
+	server.calendarSources = calendarapp.NewRESTService(calendarapp.RESTServiceDependencies{
+		Projects:  st,
+		Roles:     st,
+		Cipher:    st,
+		Sources:   st,
+		Snapshots: st,
+		Refresh:   refreshPublisher,
+	})
+	fetcher := opts.CalendarFeedFetcher
+	if fetcher == nil {
+		fetcher = calendarapp.NewHTTPFetcher(false)
+	}
+	server.agenda = calendarapp.NewAgendaService(calendarapp.AgendaServiceDependencies{
+		Sources:   st,
+		Snapshots: st,
+		Cipher:    st,
+		Fetcher:   fetcher,
+		Refresh:   refreshPublisher,
 	})
 	server.membershipMutations = membershipapp.NewRESTMutationService(membershipapp.RESTMutationServiceDependencies{
 		Mutations: st,

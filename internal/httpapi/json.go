@@ -567,6 +567,27 @@ type columnMetaJSON struct {
 	TotalCount int     `json:"totalCount"` // total todos in lane (with same filters)
 }
 
+type agendaEventJSON struct {
+	ID           string `json:"id"`
+	SourceID     int64  `json:"sourceId"`
+	CalendarName string `json:"calendarName"`
+	Title        string `json:"title"`
+	StartsAt     string `json:"startsAt"`
+	EndsAt       string `json:"endsAt"`
+	AllDay       bool   `json:"allDay"`
+	Location     string `json:"location"`
+	Provider     string `json:"provider"`
+}
+
+type agendaJSON struct {
+	Enabled   bool              `json:"enabled"`
+	Timezone  string            `json:"timezone,omitempty"`
+	Stale     bool              `json:"stale,omitempty"`
+	FetchedAt *string           `json:"fetchedAt,omitempty"`
+	Error     *string           `json:"error,omitempty"`
+	Events    []agendaEventJSON `json:"events,omitempty"`
+}
+
 type boardJSON struct {
 	Project       projectJSON               `json:"project"`
 	ColumnOrder   []workflowColumnJSON      `json:"columnOrder"`
@@ -574,6 +595,7 @@ type boardJSON struct {
 	Tags          []tagCountJSON            `json:"tags"`
 	Columns       map[string][]todoJSON     `json:"columns"`
 	ColumnsMeta   map[string]columnMetaJSON `json:"columnsMeta,omitempty"`
+	Agenda        *agendaJSON               `json:"agenda,omitempty"`
 }
 
 type lanePageJSON struct {
