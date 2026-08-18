@@ -23,10 +23,55 @@ type BindCalendarTabOptions = {
   rerender: () => Promise<void>;
 };
 
+const DEFAULT_AGENDA_TIMEZONE = 'UTC';
+
 let cachedCalendar: CalendarSourcesResponse | null = null;
 
 export function clearCalendarSettingsCache(): void {
   cachedCalendar = null;
+}
+
+export function resolveAgendaTimezone(raw: string | null | undefined): string {
+  const timezone = typeof raw === 'string' ? raw.trim() : '';
+  return timezone || DEFAULT_AGENDA_TIMEZONE;
+}
+
+export function listAgendaTimezones(savedTimezone: string): string[] {
+  const zones = new Set<string>([DEFAULT_AGENDA_TIMEZONE]);
+  zones.add(resolveAgendaTimezone(savedTimezone));
+
+  const intl = Intl as typeof Intl & {
+    supportedValuesOf?: (key: string) => string[];
+  };
+  if (typeof intl.supportedValuesOf === 'function') {
+    try {
+      for (const zone of intl.supportedValuesOf('timeZone')) {
+        if (typeof zone === 'string' && zone.trim()) zones.add(zone);
+      }
+    } catch {
+      // Discovery is best-effort; UTC + saved + browser timezone still populate.
+    }
+  }
+
+  try {
+    const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (typeof local === 'string' && local.trim()) zones.add(local);
+  } catch {
+    // Ignore environments that cannot resolve a local timezone.
+  }
+
+  return [...zones].sort((a, b) => a.localeCompare(b));
+}
+
+function renderTimezoneOptions(savedTimezone: string): string {
+  const selected = resolveAgendaTimezone(savedTimezone);
+  return listAgendaTimezones(selected)
+    .map((zone) => {
+      const escaped = escapeHTML(zone);
+      const selectedAttr = zone === selected ? ' selected' : '';
+      return `<option value="${escaped}"${selectedAttr}>${escaped}</option>`;
+    })
+    .join('');
 }
 
 export async function loadCalendarTabContent(): Promise<string> {
@@ -74,12 +119,11 @@ function renderCalendarTabHTML(data: CalendarSourcesResponse): string {
       <p class="muted" data-i18n-text="settings.calendar.enableHint">Today's events from ICS feeds appear in a read-only Agenda lane. All members see the same Agenda.</p>
     </div>
     <div class="settings-section">
-      <label class="field">
+      <label class="field" for="agendaTimezoneInput">
         <span class="field__label" data-i18n-text="settings.calendar.timezone.label">Board timezone</span>
-        <input class="input" id="agendaTimezoneInput" value="${escapeHTML(data.agendaTimezone || 'UTC')}" autocomplete="off" />
+        <select class="input" id="agendaTimezoneInput">${renderTimezoneOptions(data.agendaTimezone)}</select>
       </label>
-      <p class="muted" data-i18n-text="settings.calendar.timezone.hint">IANA timezone used for “today”, for example America/New_York. Defaults to UTC.</p>
-      <button class="btn btn--sm" type="button" id="agendaTimezoneSave" data-i18n-text="settings.calendar.timezone.save">Save timezone</button>
+      <p class="muted" data-i18n-text="settings.calendar.timezone.hint">Used for today's events. All members see Agenda in this timezone.</p>
     </div>
     <div class="settings-section">
       <h3 data-i18n-text="settings.calendar.add.title">Add ICS feed</h3>
@@ -125,12 +169,11 @@ export function bindCalendarTabInteractions(options: BindCalendarTabOptions): vo
     { signal },
   );
 
-  const timezoneSave = document.getElementById('agendaTimezoneSave');
-  timezoneSave?.addEventListener(
-    'click',
+  const timezoneSelect = document.getElementById('agendaTimezoneInput') as HTMLSelectElement | null;
+  timezoneSelect?.addEventListener(
+    'change',
     async () => {
-      const input = document.getElementById('agendaTimezoneInput') as HTMLInputElement | null;
-      const timezone = input?.value.trim() ?? '';
+      const timezone = resolveAgendaTimezone(timezoneSelect.value);
       try {
         await apiFetch(`/api/board/${slug}/settings`, {
           method: 'PATCH',
@@ -141,6 +184,7 @@ export function bindCalendarTabInteractions(options: BindCalendarTabOptions): vo
         await rerender();
       } catch (err: unknown) {
         showToast(apiErrorMessageOrRaw(err, { fallbackKey: 'settings.calendar.toast.timezoneFailed' }));
+        await rerender();
       }
     },
     { signal },
