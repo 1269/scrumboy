@@ -15,6 +15,8 @@ const (
 	CalendarHostKindOther     = "other"
 	MaxCalendarSources        = 8
 	maxCalendarSourceNameLen  = 200
+	maxAgendaTitleLen         = 200
+	DefaultAgendaTitle        = "Agenda"
 )
 
 const (
@@ -22,6 +24,7 @@ const (
 	ReasonInvalidCalendarSourceType = "invalid_calendar_source_type"
 	ReasonCalendarSourceLimit       = "calendar_source_limit_reached"
 	ReasonInvalidAgendaTimezone     = "invalid_agenda_timezone"
+	ReasonInvalidAgendaTitle        = "invalid_agenda_title"
 )
 
 // CalendarSource is a persisted ICS feed configuration. SecretEnc is ciphertext
@@ -43,6 +46,7 @@ type CalendarSource struct {
 type ProjectAgendaSettings struct {
 	Enabled  bool
 	Timezone string
+	Title    string
 }
 
 type CreateCalendarSourceInput struct {
@@ -64,59 +68,78 @@ type UpdateCalendarSourceInput struct {
 
 func (s *Store) GetProjectAgendaSettings(ctx context.Context, projectID int64) (ProjectAgendaSettings, error) {
 	var enabledInt int
-	var timezone string
+	var timezone, title string
 	err := s.db.QueryRowContext(ctx, `
-SELECT agenda_enabled, agenda_timezone
+SELECT agenda_enabled, agenda_timezone, agenda_title
 FROM projects
-WHERE id = ? AND import_batch_id IS NULL`, projectID).Scan(&enabledInt, &timezone)
+WHERE id = ? AND import_batch_id IS NULL`, projectID).Scan(&enabledInt, &timezone, &title)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return ProjectAgendaSettings{}, ErrNotFound
 		}
 		return ProjectAgendaSettings{}, fmt.Errorf("get project agenda settings: %w", err)
 	}
-	return ProjectAgendaSettings{Enabled: enabledInt == 1, Timezone: timezone}, nil
+	return ProjectAgendaSettings{
+		Enabled:  enabledInt == 1,
+		Timezone: timezone,
+		Title:    normalizeAgendaTitle(title),
+	}, nil
 }
 
-func (s *Store) UpdateProjectAgendaSettings(ctx context.Context, projectID int64, enabled *bool, timezone *string) (ProjectAgendaSettings, error) {
-	if enabled == nil && timezone == nil {
+func (s *Store) UpdateProjectAgendaSettings(ctx context.Context, projectID int64, enabled *bool, timezone *string, title *string) (ProjectAgendaSettings, error) {
+	if enabled == nil && timezone == nil && title == nil {
 		return s.GetProjectAgendaSettings(ctx, projectID)
 	}
+	existing, err := s.GetProjectAgendaSettings(ctx, projectID)
+	if err != nil {
+		return ProjectAgendaSettings{}, err
+	}
+	enabledVal := existing.Enabled
+	if enabled != nil {
+		enabledVal = *enabled
+	}
+	tzVal := existing.Timezone
 	if timezone != nil {
 		tz := strings.TrimSpace(*timezone)
 		if tz == "" {
 			return ProjectAgendaSettings{}, priorityError(ErrValidation, ReasonInvalidAgendaTimezone, "invalid agenda timezone")
 		}
-		*timezone = tz
+		tzVal = tz
+	}
+	titleVal := existing.Title
+	if title != nil {
+		normalized, err := validateAgendaTitle(*title)
+		if err != nil {
+			return ProjectAgendaSettings{}, err
+		}
+		titleVal = normalized
 	}
 
 	nowMs := time.Now().UTC().UnixMilli()
-	if enabled != nil && timezone != nil {
-		_, err := s.db.ExecContext(ctx, `
+	_, err = s.db.ExecContext(ctx, `
 UPDATE projects
-SET agenda_enabled = ?, agenda_timezone = ?, updated_at = ?
-WHERE id = ? AND import_batch_id IS NULL`, boolToInt(*enabled), *timezone, nowMs, projectID)
-		if err != nil {
-			return ProjectAgendaSettings{}, fmt.Errorf("update project agenda settings: %w", err)
-		}
-	} else if enabled != nil {
-		_, err := s.db.ExecContext(ctx, `
-UPDATE projects
-SET agenda_enabled = ?, updated_at = ?
-WHERE id = ? AND import_batch_id IS NULL`, boolToInt(*enabled), nowMs, projectID)
-		if err != nil {
-			return ProjectAgendaSettings{}, fmt.Errorf("update project agenda enabled: %w", err)
-		}
-	} else {
-		_, err := s.db.ExecContext(ctx, `
-UPDATE projects
-SET agenda_timezone = ?, updated_at = ?
-WHERE id = ? AND import_batch_id IS NULL`, *timezone, nowMs, projectID)
-		if err != nil {
-			return ProjectAgendaSettings{}, fmt.Errorf("update project agenda timezone: %w", err)
-		}
+SET agenda_enabled = ?, agenda_timezone = ?, agenda_title = ?, updated_at = ?
+WHERE id = ? AND import_batch_id IS NULL`, boolToInt(enabledVal), tzVal, titleVal, nowMs, projectID)
+	if err != nil {
+		return ProjectAgendaSettings{}, fmt.Errorf("update project agenda settings: %w", err)
 	}
 	return s.GetProjectAgendaSettings(ctx, projectID)
+}
+
+func validateAgendaTitle(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if name == "" || len(name) > maxAgendaTitleLen {
+		return "", priorityError(ErrValidation, ReasonInvalidAgendaTitle, "invalid agenda title")
+	}
+	return name, nil
+}
+
+func normalizeAgendaTitle(raw string) string {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return DefaultAgendaTitle
+	}
+	return name
 }
 
 func (s *Store) ListCalendarSources(ctx context.Context, projectID int64) ([]CalendarSource, error) {

@@ -60,6 +60,7 @@ type calendarSourceJSON struct {
 type calendarSourcesJSON struct {
 	AgendaEnabled  bool                 `json:"agendaEnabled"`
 	AgendaTimezone string               `json:"agendaTimezone"`
+	AgendaTitle    string               `json:"agendaTitle"`
 	Sources        []calendarSourceJSON `json:"sources"`
 }
 
@@ -82,6 +83,7 @@ func calendarSourcesToJSON(view calendarapp.AgendaSettingsView) calendarSourcesJ
 	return calendarSourcesJSON{
 		AgendaEnabled:  view.Enabled,
 		AgendaTimezone: view.Timezone,
+		AgendaTitle:    view.Title,
 		Sources:        sources,
 	}
 }

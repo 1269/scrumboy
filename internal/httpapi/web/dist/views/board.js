@@ -20,7 +20,7 @@ import { boardSprintsEnabled, normalizeSprints } from '../sprints.js';
 import { on, off } from '../events.js';
 import { recordLocalMutation, } from '../realtime/guard.js';
 import { buildBoardColumnsHtml, buildFiltersHtml, buildNoResultsHtml, buildTopbarHtml, buildPriorityTierMap, getBoardColumns, visibleBoardLaneCount, renderVoiceCommandTriggerHtml, renderTodoCard, } from './board-rendering.js';
-import { AGENDA_COLUMN_KEY, agendaEvents, buildAgendaColumnHtml, isAgendaEnabled } from './board-agenda.js';
+import { AGENDA_COLUMN_KEY, agendaEvents, agendaLaneTitle, buildAgendaColumnHtml, isAgendaEnabled } from './board-agenda.js';
 import { clearTodoMultiSelection, ensureBulkEditUi, getSelectedTodoIds, toggleTodoSelection, } from './board-selection.js';
 import { bootstrapLoadedBoardView } from './board-load-bootstrap.js';
 import { bindBoardFilterUi, clearSprintChipData, clearSprintChipDataIfSlugChanged, computeBoardChipsRender, ensureSprintSubscription, hasSprintChipDataForSlug, resetBoardFilterUiState, setSprintChipDataForSlug, updateChipsOnly, } from './board-filters.js';
@@ -178,7 +178,7 @@ function resolveMobileTabKeyFromStorage(saved, cols, extraKeys = []) {
 function agendaMobileTab(board) {
     if (!isAgendaEnabled(board))
         return null;
-    return { key: AGENDA_COLUMN_KEY, title: t("board.agenda.title") };
+    return { key: AGENDA_COLUMN_KEY, title: agendaLaneTitle(board) };
 }
 export function getRequestedBoardLimitPerLane(forSlug) {
     // Preserve the current on-screen lane size (e.g. cards revealed via "Load more")
@@ -609,7 +609,7 @@ function syncMobileLaneTabsStrip(board) {
             extraTabs,
             laneLabel: (key) => {
                 if (key === AGENDA_COLUMN_KEY) {
-                    return `${t("board.agenda.title")} ${agendaEvents(board).length}`;
+                    return `${agendaLaneTitle(board)} ${agendaEvents(board).length}`;
                 }
                 const col = boardCols.find((c) => c.key === key);
                 const title = col?.title ?? "";
@@ -942,7 +942,7 @@ function renderBoardFromData(board, projectId, tag, search, sprintId, assignee, 
         extraTabs: agendaMobileTab(board) ? [agendaMobileTab(board)] : [],
         laneLabel: (key) => {
             if (key === AGENDA_COLUMN_KEY) {
-                return `${t("board.agenda.title")} ${agendaEvents(board).length}`;
+                return `${agendaLaneTitle(board)} ${agendaEvents(board).length}`;
             }
             const col = boardCols.find((c) => c.key === key);
             const title = col?.title ?? "";

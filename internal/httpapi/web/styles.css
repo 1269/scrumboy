@@ -4124,6 +4124,7 @@ label:has(input[type="radio"][name="importMode"]:disabled) {
   width: var(--s-16);
   height: var(--s-16);
   pointer-events: none;
+  opacity: 0.55;
 }
 
 .card__agenda-badge img {

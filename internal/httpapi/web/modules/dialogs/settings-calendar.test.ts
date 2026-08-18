@@ -25,6 +25,7 @@ vi.mock('../utils.js', () => ({
 const calendarPayload = {
   agendaEnabled: true,
   agendaTimezone: 'UTC',
+  agendaTitle: 'Agenda',
   sources: [
     {
       id: 3,
@@ -74,6 +75,8 @@ describe('settings calendar tab', () => {
     expect(html).toContain('Family');
     expect(html).not.toContain('super-secret-token');
     expect(html).toContain('id="agendaEnabledToggle"');
+    expect(html).toContain('id="agendaTitleInput"');
+    expect(html).toContain('for="agendaTitleInput"');
     expect(html).toContain('id="agendaTimezoneInput"');
     expect(html).toContain('<select class="input" id="agendaTimezoneInput">');
     expect(html).toContain('for="agendaTimezoneInput"');
@@ -235,5 +238,62 @@ describe('settings calendar tab', () => {
     expect(rerender).toHaveBeenCalledTimes(1);
     const restored = document.getElementById('agendaTimezoneInput') as HTMLSelectElement;
     expect(restored.value).toBe('UTC');
+  });
+
+  it('saves the lane name on blur', async () => {
+    apiFetchMock.mockResolvedValue(calendarPayload);
+    const { loadCalendarTabContent, bindCalendarTabInteractions } = await import('./settings-calendar.js');
+    document.body.innerHTML = await loadCalendarTabContent();
+    const { showToast } = await import('../utils.js');
+    const rerender = vi.fn(async () => {
+      document.body.innerHTML = await loadCalendarTabContent();
+    });
+    bindCalendarTabInteractions({ signal: new AbortController().signal, rerender });
+
+    apiFetchMock.mockReset();
+    apiFetchMock.mockResolvedValueOnce({});
+    apiFetchMock.mockResolvedValueOnce({
+      ...calendarPayload,
+      agendaTitle: 'Team calendar',
+    });
+
+    const input = document.getElementById('agendaTitleInput') as HTMLInputElement;
+    input.value = 'Team calendar';
+    input.dispatchEvent(new Event('blur'));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/board/alpha/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ agendaTitle: 'Team calendar' }),
+    });
+    expect(showToast).toHaveBeenCalledWith(enCatalog['settings.calendar.toast.titleUpdated']);
+    expect(rerender).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not PATCH an empty lane name', async () => {
+    apiFetchMock.mockResolvedValue(calendarPayload);
+    const { loadCalendarTabContent, bindCalendarTabInteractions } = await import('./settings-calendar.js');
+    document.body.innerHTML = await loadCalendarTabContent();
+    const { showToast } = await import('../utils.js');
+    const rerender = vi.fn(async () => {
+      document.body.innerHTML = await loadCalendarTabContent();
+    });
+    bindCalendarTabInteractions({ signal: new AbortController().signal, rerender });
+    apiFetchMock.mockReset();
+    apiFetchMock.mockResolvedValue(calendarPayload);
+
+    const input = document.getElementById('agendaTitleInput') as HTMLInputElement;
+    input.value = '   ';
+    input.dispatchEvent(new Event('blur'));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      '/api/board/alpha/settings',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ agendaTitle: '' }) }),
+    );
+    expect(showToast).toHaveBeenCalledWith(enCatalog['settings.calendar.toast.titleRequired']);
+    expect(rerender).toHaveBeenCalledTimes(1);
   });
 });

@@ -153,11 +153,12 @@ func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http
 			SprintsEnabled     *bool   `json:"sprintsEnabled"`
 			AgendaEnabled      *bool   `json:"agendaEnabled"`
 			AgendaTimezone     *string `json:"agendaTimezone"`
+			AgendaTitle        *string `json:"agendaTitle"`
 		}
 		if err := readJSON(w, r, s.maxBody, &in); err != nil {
 			return true
 		}
-		if in.DefaultSprintWeeks == nil && in.SprintsEnabled == nil && in.AgendaEnabled == nil && in.AgendaTimezone == nil {
+		if in.DefaultSprintWeeks == nil && in.SprintsEnabled == nil && in.AgendaEnabled == nil && in.AgendaTimezone == nil && in.AgendaTitle == nil {
 			writeValidationError(w, "defaultSprintWeeks required", "default_sprint_weeks_required", map[string]any{"field": "defaultSprintWeeks"})
 			return true
 		}
@@ -167,7 +168,7 @@ func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http
 		}
 
 		resp := map[string]any{}
-		if in.AgendaEnabled != nil || in.AgendaTimezone != nil {
+		if in.AgendaEnabled != nil || in.AgendaTimezone != nil || in.AgendaTitle != nil {
 			prepared, err := s.calendarSources.Prepare(ctx, calendarapp.ResolvedRESTTarget{ProjectID: project.ID})
 			if err != nil {
 				writeCalendarPrepareError(w, err)
@@ -176,6 +177,7 @@ func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http
 			view, err := prepared.PatchSettings(calendarapp.PatchSettingsCommand{
 				Enabled:  in.AgendaEnabled,
 				Timezone: in.AgendaTimezone,
+				Title:    in.AgendaTitle,
 			})
 			if err != nil {
 				writeStoreErr(w, err, true)
@@ -183,6 +185,7 @@ func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http
 			}
 			resp["agendaEnabled"] = view.Enabled
 			resp["agendaTimezone"] = view.Timezone
+			resp["agendaTitle"] = view.Title
 		}
 		if in.DefaultSprintWeeks != nil {
 			if project.DefaultSprintWeeks != *in.DefaultSprintWeeks {

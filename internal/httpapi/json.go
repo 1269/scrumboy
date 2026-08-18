@@ -583,6 +583,7 @@ type agendaEventJSON struct {
 type agendaJSON struct {
 	Enabled   bool              `json:"enabled"`
 	Timezone  string            `json:"timezone,omitempty"`
+	Title     string            `json:"title,omitempty"`
 	Stale     bool              `json:"stale,omitempty"`
 	FetchedAt *string           `json:"fetchedAt,omitempty"`
 	Error     *string           `json:"error,omitempty"`

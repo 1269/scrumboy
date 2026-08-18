@@ -92,12 +92,32 @@ func TestCalendarSourceEncryptDecryptAndUniqueness(t *testing.T) {
 		t.Fatalf("listed = %d, want %d", len(listed), MaxCalendarSources)
 	}
 
-	settings, err := st.UpdateProjectAgendaSettings(ownerCtx, project.ID, boolPtr(true), strPtr("America/New_York"))
+	settings, err := st.UpdateProjectAgendaSettings(ownerCtx, project.ID, boolPtr(true), strPtr("America/New_York"), nil)
 	if err != nil {
 		t.Fatalf("UpdateProjectAgendaSettings: %v", err)
 	}
-	if !settings.Enabled || settings.Timezone != "America/New_York" {
+	if !settings.Enabled || settings.Timezone != "America/New_York" || settings.Title != DefaultAgendaTitle {
 		t.Fatalf("settings = %+v", settings)
+	}
+
+	custom := "Family calendar"
+	settings, err = st.UpdateProjectAgendaSettings(ownerCtx, project.ID, nil, nil, &custom)
+	if err != nil {
+		t.Fatalf("UpdateProjectAgendaSettings title: %v", err)
+	}
+	if settings.Title != custom || settings.Timezone != "America/New_York" {
+		t.Fatalf("after title update = %+v", settings)
+	}
+	empty := "   "
+	if _, err := st.UpdateProjectAgendaSettings(ownerCtx, project.ID, nil, nil, &empty); err == nil || !errors.Is(err, ErrValidation) {
+		t.Fatalf("empty title error = %v, want ErrValidation", err)
+	}
+	settings, err = st.UpdateProjectAgendaSettings(ownerCtx, project.ID, nil, strPtr("UTC"), nil)
+	if err != nil {
+		t.Fatalf("timezone-only update: %v", err)
+	}
+	if settings.Title != custom || settings.Timezone != "UTC" {
+		t.Fatalf("timezone-only mutated title = %+v", settings)
 	}
 
 	if err := st.DeleteCalendarSource(ownerCtx, project.ID, first.ID); err != nil {

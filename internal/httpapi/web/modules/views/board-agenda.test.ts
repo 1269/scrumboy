@@ -61,6 +61,19 @@ describe('agenda virtual lane', () => {
     expect(html).not.toContain('id="localId"');
     expect(html).not.toContain('data-status=');
     expect(html).toContain('Calendar may be out of date.');
+    expect(html).toContain('Agenda');
+    expect(html).not.toContain('data-i18n-text="board.agenda.title"');
+  });
+
+  it('uses a custom agenda lane title instead of the default', async () => {
+    const i18n = await import('../i18n/index.js');
+    await i18n.initI18n({ locale: 'en', loadLocale: vi.fn(async () => enCatalog) });
+    const board = agendaBoard();
+    board.agenda = { ...board.agenda!, title: 'Team calendar' };
+    const html = buildAgendaColumnHtml(board, null);
+    expect(html).toContain('Team calendar');
+    expect(html).not.toContain('>Agenda<');
+    expect(html).not.toContain('Family');
   });
 
   it('does not treat agenda as a workflow column', () => {

@@ -69,6 +69,7 @@ func TestCalendarSources_MaintainerCRUDRedactsURL(t *testing.T) {
 	var listed struct {
 		AgendaEnabled  bool   `json:"agendaEnabled"`
 		AgendaTimezone string `json:"agendaTimezone"`
+		AgendaTitle    string `json:"agendaTitle"`
 		Sources        []struct {
 			ID         int64  `json:"id"`
 			URLPreview string `json:"urlPreview"`
@@ -78,11 +79,28 @@ func TestCalendarSources_MaintainerCRUDRedactsURL(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list sources: status=%d body=%s", resp.StatusCode, string(body))
 	}
-	if !listed.AgendaEnabled || listed.AgendaTimezone != "America/New_York" || len(listed.Sources) != 1 {
+	if !listed.AgendaEnabled || listed.AgendaTimezone != "America/New_York" || listed.AgendaTitle != "Agenda" || len(listed.Sources) != 1 {
 		t.Fatalf("listed = %+v", listed)
 	}
 	if strings.Contains(string(body), "super-secret-token") {
 		t.Fatal("list response leaked calendar URL")
+	}
+
+	var patched map[string]any
+	resp, body = doJSON(t, client, http.MethodPatch, ts.URL+"/api/board/"+project.Slug+"/settings", map[string]any{
+		"agendaTitle": "Team calendar",
+	}, &patched)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("patch title: status=%d body=%s", resp.StatusCode, string(body))
+	}
+	if patched["agendaTitle"] != "Team calendar" {
+		t.Fatalf("patched=%v", patched)
+	}
+	resp, body = doJSON(t, client, http.MethodPatch, ts.URL+"/api/board/"+project.Slug+"/settings", map[string]any{
+		"agendaTitle": "  ",
+	}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty title: status=%d body=%s", resp.StatusCode, string(body))
 	}
 
 	resp, body = doJSON(t, client, http.MethodPost, ts.URL+"/api/board/"+project.Slug+"/calendar-sources", map[string]any{

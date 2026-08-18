@@ -11,6 +11,10 @@ export function resolveAgendaTimezone(raw) {
     const timezone = typeof raw === 'string' ? raw.trim() : '';
     return timezone || DEFAULT_AGENDA_TIMEZONE;
 }
+export function resolveAgendaTitle(raw) {
+    const title = typeof raw === 'string' ? raw.trim() : '';
+    return title || t('board.agenda.title');
+}
 export function listAgendaTimezones(savedTimezone) {
     const zones = new Set([DEFAULT_AGENDA_TIMEZONE]);
     zones.add(resolveAgendaTimezone(savedTimezone));
@@ -89,6 +93,13 @@ function renderCalendarTabHTML(data) {
       <p class="muted" data-i18n-text="settings.calendar.enableHint">Today's events from ICS feeds appear in a read-only Agenda lane. All members see the same Agenda.</p>
     </div>
     <div class="settings-section">
+      <label class="field" for="agendaTitleInput">
+        <span class="field__label" data-i18n-text="settings.calendar.title.label">Lane name</span>
+        <input class="input" id="agendaTitleInput" autocomplete="off" maxlength="200" value="${escapeHTML(resolveAgendaTitle(data.agendaTitle))}" />
+      </label>
+      <p class="muted" data-i18n-text="settings.calendar.title.hint">Shown as the Agenda lane title for all members.</p>
+    </div>
+    <div class="settings-section">
       <label class="field" for="agendaTimezoneInput">
         <span class="field__label" data-i18n-text="settings.calendar.timezone.label">Board timezone</span>
         <select class="input" id="agendaTimezoneInput">${renderTimezoneOptions(data.agendaTimezone)}</select>
@@ -133,6 +144,42 @@ export function bindCalendarTabInteractions(options) {
             enabledToggle.checked = !enabledToggle.checked;
             showToast(apiErrorMessageOrRaw(err, { fallbackKey: 'settings.calendar.toast.enabledFailed' }));
         }
+    }, { signal });
+    const titleInput = document.getElementById('agendaTitleInput');
+    const saveAgendaTitle = async () => {
+        if (!titleInput)
+            return;
+        const title = titleInput.value.trim();
+        if (!title) {
+            showToast(t('settings.calendar.toast.titleRequired'));
+            await rerender();
+            return;
+        }
+        if (title === resolveAgendaTitle(cachedCalendar?.agendaTitle)) {
+            return;
+        }
+        try {
+            await apiFetch(`/api/board/${slug}/settings`, {
+                method: 'PATCH',
+                body: JSON.stringify({ agendaTitle: title }),
+            });
+            showToast(t('settings.calendar.toast.titleUpdated'));
+            clearCalendarSettingsCache();
+            await rerender();
+        }
+        catch (err) {
+            showToast(apiErrorMessageOrRaw(err, { fallbackKey: 'settings.calendar.toast.titleFailed' }));
+            await rerender();
+        }
+    };
+    titleInput?.addEventListener('blur', () => {
+        void saveAgendaTitle();
+    }, { signal });
+    titleInput?.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter')
+            return;
+        event.preventDefault();
+        titleInput.blur();
     }, { signal });
     const timezoneSelect = document.getElementById('agendaTimezoneInput');
     timezoneSelect?.addEventListener('change', async () => {

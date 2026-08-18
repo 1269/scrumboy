@@ -78,6 +78,7 @@ export interface AgendaEvent {
 export interface Agenda {
   enabled: boolean;
   timezone?: string;
+  title?: string;
   stale?: boolean;
   fetchedAt?: string | null;
   error?: string | null;

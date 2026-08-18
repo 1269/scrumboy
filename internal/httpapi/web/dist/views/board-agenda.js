@@ -7,6 +7,10 @@ export function isAgendaEnabled(board) {
 export function agendaEvents(board) {
     return board.agenda?.events ?? [];
 }
+export function agendaLaneTitle(board) {
+    const custom = typeof board.agenda?.title === 'string' ? board.agenda.title.trim() : '';
+    return custom || t('board.agenda.title');
+}
 export function renderAgendaEventCard(event, timezone) {
     const timeLabel = formatAgendaEventTime(event, timezone);
     const location = event.location ? `<div class="muted">${escapeHTML(event.location)}</div>` : '';
@@ -48,11 +52,11 @@ export function buildAgendaColumnHtml(board, activeMobileTab) {
         : board.agenda?.error
             ? ''
             : `<div class="muted col__agenda-empty" data-i18n-text="board.agenda.empty">${escapeHTML(t('board.agenda.empty'))}</div>`;
-    const title = escapeHTML(t('board.agenda.title'));
+    const title = escapeHTML(agendaLaneTitle(board));
     return `
     <section class="col col--agenda${isMobileActive ? ' col--mobile-active' : ''}" data-column="${AGENDA_COLUMN_KEY}">
       <div class="col__head col__head--agenda">
-        <span class="col__title" data-i18n-text="board.agenda.title">${title}</span>
+        <span class="col__title">${title}</span>
         <span class="col__count" data-count-for="${AGENDA_COLUMN_KEY}">${events.length}</span>
       </div>
       ${status}

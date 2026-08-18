@@ -71,7 +71,7 @@ END:VCALENDAR
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if _, err := st.UpdateProjectAgendaSettings(ctxOwner, project.ID, boolPtr(true), strPtr("UTC")); err != nil {
+	if _, err := st.UpdateProjectAgendaSettings(ctxOwner, project.ID, boolPtr(true), strPtr("UTC"), nil); err != nil {
 		t.Fatalf("UpdateProjectAgendaSettings: %v", err)
 	}
 	enc, err := st.EncryptSecret([]byte("https://calendar.example.com/private/super-secret-token.ics"))
@@ -141,6 +141,9 @@ END:VCALENDAR
 	if agenda["timezone"] != "UTC" {
 		t.Fatalf("timezone=%v", agenda["timezone"])
 	}
+	if agenda["title"] != "Agenda" {
+		t.Fatalf("title=%v, want Agenda", agenda["title"])
+	}
 	events, _ := agenda["events"].([]any)
 	if len(events) < 1 {
 		t.Fatalf("agenda events=%v", agenda["events"])
@@ -156,7 +159,7 @@ END:VCALENDAR
 		t.Fatal("event leaked urlHash")
 	}
 
-	disabled, err := st.UpdateProjectAgendaSettings(ctxOwner, project.ID, boolPtr(false), nil)
+	disabled, err := st.UpdateProjectAgendaSettings(ctxOwner, project.ID, boolPtr(false), nil, nil)
 	if err != nil || disabled.Enabled {
 		t.Fatalf("disable agenda: %+v %v", disabled, err)
 	}
@@ -205,7 +208,7 @@ func TestCalendarSourceRefresh_PublishesAgendaUpdatedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if _, err := st.UpdateProjectAgendaSettings(ctxOwner, project.ID, boolPtr(true), strPtr("UTC")); err != nil {
+	if _, err := st.UpdateProjectAgendaSettings(ctxOwner, project.ID, boolPtr(true), strPtr("UTC"), nil); err != nil {
 		t.Fatalf("UpdateProjectAgendaSettings: %v", err)
 	}
 	enc, err := st.EncryptSecret([]byte("https://calendar.example.com/private/token.ics"))
@@ -270,7 +273,7 @@ func TestCalendarSourceRefresh_ProviderFailureKeepsLastGoodAndDoesNotSucceed(t *
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if _, err := st.UpdateProjectAgendaSettings(ctxOwner, project.ID, boolPtr(true), strPtr("UTC")); err != nil {
+	if _, err := st.UpdateProjectAgendaSettings(ctxOwner, project.ID, boolPtr(true), strPtr("UTC"), nil); err != nil {
 		t.Fatalf("UpdateProjectAgendaSettings: %v", err)
 	}
 	enc, err := st.EncryptSecret([]byte("https://calendar.example.com/private/super-secret-token.ics"))
@@ -369,7 +372,7 @@ func TestCalendarSourceRefresh_DistinguishesOversizedFeedFromOccurrenceExplosion
 			if err != nil {
 				t.Fatalf("CreateProject: %v", err)
 			}
-			if _, err := st.UpdateProjectAgendaSettings(ctxOwner, project.ID, boolPtr(true), strPtr("UTC")); err != nil {
+			if _, err := st.UpdateProjectAgendaSettings(ctxOwner, project.ID, boolPtr(true), strPtr("UTC"), nil); err != nil {
 				t.Fatalf("UpdateProjectAgendaSettings: %v", err)
 			}
 			enc, err := st.EncryptSecret([]byte("https://calendar.example.com/private/super-secret-token.ics"))

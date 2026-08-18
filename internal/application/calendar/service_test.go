@@ -69,13 +69,17 @@ type calendarSourceStoreFake struct {
 func (f *calendarSourceStoreFake) GetProjectAgendaSettings(context.Context, int64) (store.ProjectAgendaSettings, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.settings.Timezone == "" {
-		return store.ProjectAgendaSettings{Timezone: "UTC"}, nil
+	settings := f.settings
+	if settings.Timezone == "" {
+		settings.Timezone = "UTC"
 	}
-	return f.settings, nil
+	if settings.Title == "" {
+		settings.Title = store.DefaultAgendaTitle
+	}
+	return settings, nil
 }
 
-func (f *calendarSourceStoreFake) UpdateProjectAgendaSettings(_ context.Context, _ int64, enabled *bool, timezone *string) (store.ProjectAgendaSettings, error) {
+func (f *calendarSourceStoreFake) UpdateProjectAgendaSettings(_ context.Context, _ int64, enabled *bool, timezone *string, title *string) (store.ProjectAgendaSettings, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if enabled != nil {
@@ -84,8 +88,14 @@ func (f *calendarSourceStoreFake) UpdateProjectAgendaSettings(_ context.Context,
 	if timezone != nil {
 		f.settings.Timezone = *timezone
 	}
+	if title != nil {
+		f.settings.Title = *title
+	}
 	if f.settings.Timezone == "" {
 		f.settings.Timezone = "UTC"
+	}
+	if f.settings.Title == "" {
+		f.settings.Title = store.DefaultAgendaTitle
 	}
 	return f.settings, nil
 }
@@ -364,6 +374,23 @@ func TestPatchSettingsValidatesTimezone(t *testing.T) {
 	}
 	if view.Timezone != "America/New_York" {
 		t.Fatalf("timezone = %q", view.Timezone)
+	}
+}
+
+func TestPatchSettingsPersistsTitleWithoutChangingTimezone(t *testing.T) {
+	prepared := preparedCalendar(t, RESTServiceDependencies{
+		Projects: &calendarProjectFake{project: store.Project{ID: 9}},
+		Roles:    &calendarRoleFake{role: store.RoleMaintainer},
+		Cipher:   &calendarCipherFake{},
+		Sources:  &calendarSourceStoreFake{settings: store.ProjectAgendaSettings{Timezone: "America/Chicago", Title: store.DefaultAgendaTitle}},
+	})
+	title := "Team calendar"
+	view, err := prepared.PatchSettings(PatchSettingsCommand{Title: &title})
+	if err != nil {
+		t.Fatalf("PatchSettings title: %v", err)
+	}
+	if view.Title != title || view.Timezone != "America/Chicago" {
+		t.Fatalf("view = %+v", view)
 	}
 }
 

@@ -69,7 +69,7 @@ import {
   type RenderTodoCardOpts,
   type SprintChipData,
 } from './board-rendering.js';
-import { AGENDA_COLUMN_KEY, agendaEvents, buildAgendaColumnHtml, isAgendaEnabled } from './board-agenda.js';
+import { AGENDA_COLUMN_KEY, agendaEvents, agendaLaneTitle, buildAgendaColumnHtml, isAgendaEnabled } from './board-agenda.js';
 import {
   clearTodoMultiSelection,
   ensureBulkEditUi,
@@ -264,7 +264,7 @@ function resolveMobileTabKeyFromStorage(
 
 function agendaMobileTab(board: Board): { key: string; title: string } | null {
   if (!isAgendaEnabled(board)) return null;
-  return { key: AGENDA_COLUMN_KEY, title: t("board.agenda.title") };
+  return { key: AGENDA_COLUMN_KEY, title: agendaLaneTitle(board) };
 }
 
 export function getRequestedBoardLimitPerLane(forSlug?: string | null): number {
@@ -704,7 +704,7 @@ function syncMobileLaneTabsStrip(board: Board): void {
       extraTabs,
       laneLabel: (key) => {
         if (key === AGENDA_COLUMN_KEY) {
-          return `${t("board.agenda.title")} ${agendaEvents(board).length}`;
+          return `${agendaLaneTitle(board)} ${agendaEvents(board).length}`;
         }
         const col = boardCols.find((c) => c.key === key);
         const title = col?.title ?? "";
@@ -1060,7 +1060,7 @@ function renderBoardFromData(board: Board, projectId: number, tag: string, searc
               extraTabs: agendaMobileTab(board) ? [agendaMobileTab(board)!] : [],
               laneLabel: (key) => {
                 if (key === AGENDA_COLUMN_KEY) {
-                  return `${t("board.agenda.title")} ${agendaEvents(board).length}`;
+                  return `${agendaLaneTitle(board)} ${agendaEvents(board).length}`;
                 }
                 const col = boardCols.find((c) => c.key === key);
                 const title = col?.title ?? "";

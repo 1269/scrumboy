@@ -72,6 +72,7 @@ type ProjectExport struct {
 	SprintsEnabled  *bool                  `json:"sprintsEnabled,omitempty"`
 	AgendaEnabled   *bool                  `json:"agendaEnabled,omitempty"`
 	AgendaTimezone  string                 `json:"agendaTimezone,omitempty"`
+	AgendaTitle     string                 `json:"agendaTitle,omitempty"`
 	ExpiresAt       *time.Time             `json:"expiresAt"`
 	CreatedAt       time.Time              `json:"createdAt"`
 	UpdatedAt       time.Time              `json:"updatedAt"`
@@ -555,6 +556,7 @@ func (s *Store) ExportAllProjects(ctx context.Context, mode Mode) (*ExportData, 
 			SprintsEnabled:       &sprintsEnabled,
 			AgendaEnabled:        &agendaEnabled,
 			AgendaTimezone:       agendaSettings.Timezone,
+			AgendaTitle:          agendaSettings.Title,
 			ExpiresAt:            p.ExpiresAt,
 			CreatedAt:            p.CreatedAt,
 			UpdatedAt:            p.UpdatedAt,
@@ -591,13 +593,19 @@ func (s *Store) ExportAllProjects(ctx context.Context, mode Mode) (*ExportData, 
 }
 
 func applyAgendaFlagsExec(ctx context.Context, tx *sql.Tx, projectID int64, pExport ProjectExport) error {
-	if pExport.AgendaEnabled == nil && strings.TrimSpace(pExport.AgendaTimezone) == "" {
+	title := strings.TrimSpace(pExport.AgendaTitle)
+	tz := strings.TrimSpace(pExport.AgendaTimezone)
+	if pExport.AgendaEnabled == nil && tz == "" && title == "" {
 		return nil
 	}
-	tz := strings.TrimSpace(pExport.AgendaTimezone)
 	if tz != "" {
 		if _, err := time.LoadLocation(tz); err != nil {
 			return fmt.Errorf("%w: invalid agenda timezone", ErrValidation)
+		}
+	}
+	if title != "" {
+		if _, err := validateAgendaTitle(title); err != nil {
+			return err
 		}
 	}
 	if pExport.AgendaEnabled != nil && tz != "" {
@@ -606,19 +614,22 @@ func applyAgendaFlagsExec(ctx context.Context, tx *sql.Tx, projectID int64, pExp
 		if err != nil {
 			return fmt.Errorf("update agenda flags: %w", err)
 		}
-		return nil
-	}
-	if pExport.AgendaEnabled != nil {
+	} else if pExport.AgendaEnabled != nil {
 		_, err := tx.ExecContext(ctx, `UPDATE projects SET agenda_enabled = ? WHERE id = ?`,
 			boolToInt(*pExport.AgendaEnabled), projectID)
 		if err != nil {
 			return fmt.Errorf("update agenda enabled: %w", err)
 		}
-	}
-	if tz != "" {
+	} else if tz != "" {
 		_, err := tx.ExecContext(ctx, `UPDATE projects SET agenda_timezone = ? WHERE id = ?`, tz, projectID)
 		if err != nil {
 			return fmt.Errorf("update agenda timezone: %w", err)
+		}
+	}
+	if title != "" {
+		_, err := tx.ExecContext(ctx, `UPDATE projects SET agenda_title = ? WHERE id = ?`, title, projectID)
+		if err != nil {
+			return fmt.Errorf("update agenda title: %w", err)
 		}
 	}
 	return nil

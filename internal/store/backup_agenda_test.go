@@ -26,7 +26,8 @@ func TestBackupExportsAgendaFlagsAndOmitsCalendarSources(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	tz := "America/New_York"
-	if _, err := st.UpdateProjectAgendaSettings(ownerCtx, project.ID, boolPtr(true), &tz); err != nil {
+	title := "Family calendar"
+	if _, err := st.UpdateProjectAgendaSettings(ownerCtx, project.ID, boolPtr(true), &tz, &title); err != nil {
 		t.Fatalf("UpdateProjectAgendaSettings: %v", err)
 	}
 	secretURL := "https://calendar.example.com/private/super-secret-token.ics"
@@ -56,6 +57,9 @@ func TestBackupExportsAgendaFlagsAndOmitsCalendarSources(t *testing.T) {
 	}
 	if exported.AgendaTimezone != "America/New_York" {
 		t.Fatalf("exported agendaTimezone=%q", exported.AgendaTimezone)
+	}
+	if exported.AgendaTitle != "Family calendar" {
+		t.Fatalf("exported agendaTitle=%q", exported.AgendaTitle)
 	}
 
 	raw, err := json.Marshal(data)
@@ -92,7 +96,7 @@ func TestBackupExportsAgendaFlagsAndOmitsCalendarSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProjectAgendaSettings: %v", err)
 	}
-	if !settings.Enabled || settings.Timezone != "America/New_York" {
+	if !settings.Enabled || settings.Timezone != "America/New_York" || settings.Title != "Family calendar" {
 		t.Fatalf("imported settings = %+v", settings)
 	}
 	count, err := st2.CountCalendarSources(importCtx, imported.ID)
