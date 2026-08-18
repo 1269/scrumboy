@@ -15,6 +15,46 @@ const (
 	maxSources        = 8
 )
 
+type CalendarHostKind string
+
+const (
+	CalendarHostKindGoogle CalendarHostKind = "google"
+	CalendarHostKindApple  CalendarHostKind = "apple"
+	CalendarHostKindOther  CalendarHostKind = "other"
+)
+
+const icloudDomain = "icloud.com"
+
+func calendarHostKind(canonicalURL string) CalendarHostKind {
+	parsed, err := url.Parse(strings.TrimSpace(canonicalURL))
+	if err != nil {
+		return CalendarHostKindOther
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" {
+		return CalendarHostKindOther
+	}
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = parsed.Path
+	}
+	switch host {
+	case "calendar.google.com":
+		return CalendarHostKindGoogle
+	case "google.com", "www.google.com":
+		if strings.HasPrefix(path, "/calendar/ical/") {
+			return CalendarHostKindGoogle
+		}
+		return CalendarHostKindOther
+	case icloudDomain:
+		return CalendarHostKindApple
+	}
+	if strings.HasSuffix(host, "."+icloudDomain) {
+		return CalendarHostKindApple
+	}
+	return CalendarHostKindOther
+}
+
 func canonicalCalendarURL(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

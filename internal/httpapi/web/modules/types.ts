@@ -72,6 +72,7 @@ export interface AgendaEvent {
   allDay: boolean;
   location: string;
   provider: string;
+  hostKind?: string;
 }
 
 export interface Agenda {

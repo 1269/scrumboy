@@ -163,6 +163,7 @@ func agendaViewToJSON(view calendarapp.AgendaView) *agendaJSON {
 			AllDay:       ev.AllDay,
 			Location:     ev.Location,
 			Provider:     ev.Provider,
+			HostKind:     ev.HostKind,
 		})
 	}
 	return out

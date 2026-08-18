@@ -129,6 +129,7 @@ func (f *calendarSourceStoreFake) CreateCalendarSource(_ context.Context, projec
 		Enabled:   in.Enabled,
 		SecretEnc: in.SecretEnc,
 		URLHash:   in.URLHash,
+		HostKind:  in.HostKind,
 	}
 	f.sources = append(f.sources, src)
 	return src, nil
@@ -156,10 +157,40 @@ func (f *calendarSourceStoreFake) UpdateCalendarSource(_ context.Context, projec
 		if in.URLHash != nil {
 			src.URLHash = *in.URLHash
 		}
+		if in.HostKind != nil {
+			src.HostKind = *in.HostKind
+		}
 		f.sources[i] = src
 		return src, nil
 	}
 	return store.CalendarSource{}, store.ErrNotFound
+}
+
+func (f *calendarSourceStoreFake) UpdateCalendarSourceHostKindIfURLHashCurrent(_ context.Context, sourceID int64, expectedURLHash, hostKind string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if expectedURLHash == "" {
+		return false, nil
+	}
+	for i, src := range f.sources {
+		if src.ID != sourceID {
+			continue
+		}
+		if src.URLHash != expectedURLHash {
+			return false, nil
+		}
+		current := src.HostKind
+		if current == "" {
+			current = store.CalendarHostKindOther
+		}
+		if current == hostKind {
+			return false, nil
+		}
+		src.HostKind = hostKind
+		f.sources[i] = src
+		return true, nil
+	}
+	return false, nil
 }
 
 func (f *calendarSourceStoreFake) DeleteCalendarSource(_ context.Context, _ int64, sourceID int64) error {
@@ -178,6 +209,7 @@ type calendarRefreshFake struct {
 	mu         sync.Mutex
 	calls      int
 	lastReason string
+	reasons    []string
 }
 
 func (f *calendarRefreshFake) PublishBoardRefresh(_ context.Context, _ int64, reason string) {
@@ -185,12 +217,25 @@ func (f *calendarRefreshFake) PublishBoardRefresh(_ context.Context, _ int64, re
 	defer f.mu.Unlock()
 	f.calls++
 	f.lastReason = reason
+	f.reasons = append(f.reasons, reason)
 }
 
 func (f *calendarRefreshFake) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *calendarRefreshFake) reasonCount(reason string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, got := range f.reasons {
+		if got == reason {
+			n++
+		}
+	}
+	return n
 }
 
 func preparedCalendar(t *testing.T, deps RESTServiceDependencies) *PreparedREST {
@@ -319,5 +364,56 @@ func TestPatchSettingsValidatesTimezone(t *testing.T) {
 	}
 	if view.Timezone != "America/New_York" {
 		t.Fatalf("timezone = %q", view.Timezone)
+	}
+}
+
+func TestCreateStoresHostKindAndNameOnlyUpdateDoesNotRecompute(t *testing.T) {
+	sources := &calendarSourceStoreFake{}
+	prepared := preparedCalendar(t, RESTServiceDependencies{
+		Projects: &calendarProjectFake{project: store.Project{ID: 9}},
+		Roles:    &calendarRoleFake{role: store.RoleMaintainer},
+		Cipher:   passthroughCipher{},
+		Sources:  sources,
+	})
+	created, err := prepared.Create(CreateSourceCommand{
+		Name: "Family",
+		URL:  "https://calendar.google.com/calendar/ical/family/private-token/basic.ics",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	src, err := sources.GetCalendarSource(context.Background(), 9, created.ID)
+	if err != nil {
+		t.Fatalf("GetCalendarSource: %v", err)
+	}
+	if src.HostKind != store.CalendarHostKindGoogle {
+		t.Fatalf("create host_kind=%q, want google", src.HostKind)
+	}
+	if strings.Contains(created.URLPreview, "private-token") {
+		t.Fatal("preview leaked token")
+	}
+
+	name := "Renamed"
+	if _, err := prepared.Update(UpdateSourceCommand{SourceID: created.ID, Name: &name}); err != nil {
+		t.Fatalf("Update name: %v", err)
+	}
+	src, err = sources.GetCalendarSource(context.Background(), 9, created.ID)
+	if err != nil {
+		t.Fatalf("Get after name update: %v", err)
+	}
+	if src.HostKind != store.CalendarHostKindGoogle || src.Name != "Renamed" {
+		t.Fatalf("after name update: %+v", src)
+	}
+
+	appleURL := "https://p12-caldav.icloud.com/published/2/guid"
+	if _, err := prepared.Update(UpdateSourceCommand{SourceID: created.ID, URL: &appleURL}); err != nil {
+		t.Fatalf("Update URL: %v", err)
+	}
+	src, err = sources.GetCalendarSource(context.Background(), 9, created.ID)
+	if err != nil {
+		t.Fatalf("Get after URL update: %v", err)
+	}
+	if src.HostKind != store.CalendarHostKindApple {
+		t.Fatalf("after URL update host_kind=%q, want apple", src.HostKind)
 	}
 }

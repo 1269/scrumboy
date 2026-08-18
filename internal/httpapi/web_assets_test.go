@@ -165,3 +165,26 @@ func TestWebBoard_MobileTabLegacyResolutionAndSync(t *testing.T) {
 		}
 	}
 }
+
+func TestWebAssets_CalendarHostBadgesAreEmbedded(t *testing.T) {
+	for _, name := range []string{"google.webp", "apple.webp"} {
+		data, err := embeddedWeb.ReadFile("web/assets/calendar/" + name)
+		if err != nil {
+			t.Fatalf("read embedded calendar badge %s: %v", name, err)
+		}
+		if len(data) == 0 {
+			t.Fatalf("embedded calendar badge %s is empty", name)
+		}
+	}
+	css, err := embeddedWeb.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatalf("read embedded styles.css: %v", err)
+	}
+	s := string(css)
+	if !strings.Contains(s, ".card__agenda-badge--apple") || !strings.Contains(s, "filter: invert(1)") {
+		t.Fatal("expected Apple badge dark-mode invert")
+	}
+	if !strings.Contains(s, `[data-theme="light"] .card__agenda-badge--apple`) {
+		t.Fatal("expected Apple badge light-mode invert reset")
+	}
+}

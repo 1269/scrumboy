@@ -577,6 +577,7 @@ type agendaEventJSON struct {
 	AllDay       bool   `json:"allDay"`
 	Location     string `json:"location"`
 	Provider     string `json:"provider"`
+	HostKind     string `json:"hostKind"`
 }
 
 type agendaJSON struct {

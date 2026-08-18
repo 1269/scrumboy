@@ -4104,6 +4104,7 @@ label:has(input[type="radio"][name="importMode"]:disabled) {
 .card--agenda {
   cursor: default;
   border-color: #6366F1;
+  padding-bottom: var(--s-28);
 }
 
 .card--agenda:hover {
@@ -4113,6 +4114,30 @@ label:has(input[type="radio"][name="importMode"]:disabled) {
 .card__agenda-meta {
   font-size: var(--fs-12);
   margin-top: var(--s-4);
+}
+
+.card__agenda-badge {
+  position: absolute;
+  right: var(--s-8);
+  bottom: var(--s-8);
+  display: inline-flex;
+  width: var(--s-16);
+  height: var(--s-16);
+  pointer-events: none;
+}
+
+.card__agenda-badge img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.card__agenda-badge--apple {
+  filter: invert(1);
+}
+
+[data-theme="light"] .card__agenda-badge--apple {
+  filter: none;
 }
 
 .card:focus {

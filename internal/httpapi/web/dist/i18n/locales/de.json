@@ -156,6 +156,8 @@
   "board.agenda.empty": "No events today.",
   "board.agenda.stale": "Calendar may be out of date.",
   "board.agenda.allDay": "All day",
+  "board.agenda.badge.google": "Google Calendar",
+  "board.agenda.badge.apple": "Apple Calendar",
   "board.loadMoreFailed": "Weitere Einträge konnten nicht geladen werden",
   "board.members.addFailed": "Mitglied konnte nicht hinzugefügt werden",
   "board.members.addMember": "Mitglied hinzufügen",

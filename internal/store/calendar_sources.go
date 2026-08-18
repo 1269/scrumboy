@@ -10,6 +10,9 @@ import (
 
 const (
 	CalendarSourceTypeICSFeed = "ics_feed"
+	CalendarHostKindGoogle    = "google"
+	CalendarHostKindApple     = "apple"
+	CalendarHostKindOther     = "other"
 	MaxCalendarSources        = 8
 	maxCalendarSourceNameLen  = 200
 )
@@ -31,6 +34,7 @@ type CalendarSource struct {
 	Enabled   bool
 	SecretEnc string
 	URLHash   string
+	HostKind  string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -47,6 +51,7 @@ type CreateCalendarSourceInput struct {
 	Enabled   bool
 	SecretEnc string
 	URLHash   string
+	HostKind  string
 }
 
 type UpdateCalendarSourceInput struct {
@@ -54,6 +59,7 @@ type UpdateCalendarSourceInput struct {
 	Enabled   *bool
 	SecretEnc *string
 	URLHash   *string
+	HostKind  *string
 }
 
 func (s *Store) GetProjectAgendaSettings(ctx context.Context, projectID int64) (ProjectAgendaSettings, error) {
@@ -115,7 +121,7 @@ WHERE id = ? AND import_batch_id IS NULL`, *timezone, nowMs, projectID)
 
 func (s *Store) ListCalendarSources(ctx context.Context, projectID int64) ([]CalendarSource, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, project_id, type, name, enabled, secret_enc, url_hash, created_at, updated_at
+SELECT id, project_id, type, name, enabled, secret_enc, url_hash, host_kind, created_at, updated_at
 FROM calendar_sources
 WHERE project_id = ?
 ORDER BY id ASC`, projectID)
@@ -148,7 +154,7 @@ func (s *Store) CountCalendarSources(ctx context.Context, projectID int64) (int,
 
 func (s *Store) GetCalendarSource(ctx context.Context, projectID, sourceID int64) (CalendarSource, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, project_id, type, name, enabled, secret_enc, url_hash, created_at, updated_at
+SELECT id, project_id, type, name, enabled, secret_enc, url_hash, host_kind, created_at, updated_at
 FROM calendar_sources
 WHERE id = ? AND project_id = ?`, sourceID, projectID)
 	src, err := scanCalendarSource(row)
@@ -176,9 +182,9 @@ func (s *Store) CreateCalendarSource(ctx context.Context, projectID int64, in Cr
 
 	nowMs := time.Now().UTC().UnixMilli()
 	res, err := s.db.ExecContext(ctx, `
-INSERT INTO calendar_sources(project_id, type, name, enabled, secret_enc, url_hash, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		projectID, srcType, name, boolToInt(in.Enabled), in.SecretEnc, in.URLHash, nowMs, nowMs)
+INSERT INTO calendar_sources(project_id, type, name, enabled, secret_enc, url_hash, host_kind, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		projectID, srcType, name, boolToInt(in.Enabled), in.SecretEnc, in.URLHash, normalizeCalendarHostKind(in.HostKind), nowMs, nowMs)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return CalendarSource{}, fmt.Errorf("%w: calendar source already exists", ErrConflict)
@@ -210,6 +216,7 @@ func (s *Store) UpdateCalendarSource(ctx context.Context, projectID, sourceID in
 	}
 	secretEnc := existing.SecretEnc
 	urlHash := existing.URLHash
+	hostKind := existing.HostKind
 	if in.SecretEnc != nil || in.URLHash != nil {
 		if in.SecretEnc == nil || in.URLHash == nil || strings.TrimSpace(*in.SecretEnc) == "" || strings.TrimSpace(*in.URLHash) == "" {
 			return CalendarSource{}, fmt.Errorf("%w: calendar source secret required", ErrValidation)
@@ -217,13 +224,16 @@ func (s *Store) UpdateCalendarSource(ctx context.Context, projectID, sourceID in
 		secretEnc = *in.SecretEnc
 		urlHash = *in.URLHash
 	}
+	if in.HostKind != nil {
+		hostKind = *in.HostKind
+	}
 
 	nowMs := time.Now().UTC().UnixMilli()
 	_, err = s.db.ExecContext(ctx, `
 UPDATE calendar_sources
-SET name = ?, enabled = ?, secret_enc = ?, url_hash = ?, updated_at = ?
+SET name = ?, enabled = ?, secret_enc = ?, url_hash = ?, host_kind = ?, updated_at = ?
 WHERE id = ? AND project_id = ?`,
-		name, boolToInt(enabled), secretEnc, urlHash, nowMs, sourceID, projectID)
+		name, boolToInt(enabled), secretEnc, urlHash, normalizeCalendarHostKind(hostKind), nowMs, sourceID, projectID)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return CalendarSource{}, fmt.Errorf("%w: calendar source already exists", ErrConflict)
@@ -248,6 +258,27 @@ func (s *Store) DeleteCalendarSource(ctx context.Context, projectID, sourceID in
 	return nil
 }
 
+func (s *Store) UpdateCalendarSourceHostKindIfURLHashCurrent(ctx context.Context, sourceID int64, expectedURLHash, hostKind string) (bool, error) {
+	hash := strings.TrimSpace(expectedURLHash)
+	if hash == "" {
+		return false, nil
+	}
+	kind := normalizeCalendarHostKind(hostKind)
+	res, err := s.db.ExecContext(ctx, `
+UPDATE calendar_sources
+SET host_kind = ?
+WHERE id = ? AND url_hash = ? AND host_kind <> ?`,
+		kind, sourceID, hash, kind)
+	if err != nil {
+		return false, fmt.Errorf("update calendar source host kind: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("update calendar source host kind rows: %w", err)
+	}
+	return n == 1, nil
+}
+
 type calendarSourceRow interface {
 	Scan(dest ...any) error
 }
@@ -256,14 +287,24 @@ func scanCalendarSource(row calendarSourceRow) (CalendarSource, error) {
 	var src CalendarSource
 	var enabledInt int
 	var createdAtMs, updatedAtMs int64
-	if err := row.Scan(&src.ID, &src.ProjectID, &src.Type, &src.Name, &enabledInt, &src.SecretEnc, &src.URLHash, &createdAtMs, &updatedAtMs); err != nil {
+	if err := row.Scan(&src.ID, &src.ProjectID, &src.Type, &src.Name, &enabledInt, &src.SecretEnc, &src.URLHash, &src.HostKind, &createdAtMs, &updatedAtMs); err != nil {
 		if err == sql.ErrNoRows {
 			return CalendarSource{}, ErrNotFound
 		}
 		return CalendarSource{}, fmt.Errorf("scan calendar source: %w", err)
 	}
 	src.Enabled = enabledInt == 1
+	src.HostKind = normalizeCalendarHostKind(src.HostKind)
 	src.CreatedAt = time.UnixMilli(createdAtMs).UTC()
 	src.UpdatedAt = time.UnixMilli(updatedAtMs).UTC()
 	return src, nil
+}
+
+func normalizeCalendarHostKind(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case CalendarHostKindGoogle, CalendarHostKindApple, CalendarHostKindOther:
+		return strings.TrimSpace(raw)
+	default:
+		return CalendarHostKindOther
+	}
 }

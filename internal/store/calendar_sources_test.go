@@ -52,6 +52,9 @@ func TestCalendarSourceEncryptDecryptAndUniqueness(t *testing.T) {
 	if first.Name != "Family" || first.Type != CalendarSourceTypeICSFeed || !first.Enabled {
 		t.Fatalf("created = %+v", first)
 	}
+	if first.HostKind != CalendarHostKindOther {
+		t.Fatalf("default host_kind=%q, want other", first.HostKind)
+	}
 
 	_, err = st.CreateCalendarSource(ownerCtx, project.ID, CreateCalendarSourceInput{
 		Name:      "Duplicate",
@@ -102,6 +105,82 @@ func TestCalendarSourceEncryptDecryptAndUniqueness(t *testing.T) {
 	}
 	if _, err := st.GetCalendarSource(ownerCtx, project.ID, first.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Get after delete = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCalendarSourceHostKindFenceDoesNotBumpUpdatedAt(t *testing.T) {
+	st, cleanup := newTestStoreWith2FA(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	user, err := st.BootstrapUser(ctx, "calendar-hostkind@example.com", "password123", "Owner")
+	if err != nil {
+		t.Fatalf("BootstrapUser: %v", err)
+	}
+	ownerCtx := WithUserID(ctx, user.ID)
+	project, err := st.CreateProject(ownerCtx, "Host Kind")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	enc, err := st.EncryptSecret([]byte("https://calendar.google.com/calendar/ical/x/basic.ics"))
+	if err != nil {
+		t.Fatalf("EncryptSecret: %v", err)
+	}
+	src, err := st.CreateCalendarSource(ownerCtx, project.ID, CreateCalendarSourceInput{
+		Type:      CalendarSourceTypeICSFeed,
+		Name:      "Family",
+		Enabled:   true,
+		SecretEnc: enc,
+		URLHash:   "hash-google",
+		HostKind:  CalendarHostKindOther,
+	})
+	if err != nil {
+		t.Fatalf("CreateCalendarSource: %v", err)
+	}
+	if src.HostKind != CalendarHostKindOther {
+		t.Fatalf("host_kind=%q, want other", src.HostKind)
+	}
+	updatedAt := src.UpdatedAt
+
+	changed, err := st.UpdateCalendarSourceHostKindIfURLHashCurrent(ownerCtx, src.ID, "hash-google", CalendarHostKindGoogle)
+	if err != nil {
+		t.Fatalf("fenced update: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected host_kind change")
+	}
+	got, err := st.GetCalendarSource(ownerCtx, project.ID, src.ID)
+	if err != nil {
+		t.Fatalf("GetCalendarSource: %v", err)
+	}
+	if got.HostKind != CalendarHostKindGoogle {
+		t.Fatalf("host_kind=%q, want google", got.HostKind)
+	}
+	if !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("updated_at bumped: %v -> %v", updatedAt, got.UpdatedAt)
+	}
+
+	changed, err = st.UpdateCalendarSourceHostKindIfURLHashCurrent(ownerCtx, src.ID, "hash-google", CalendarHostKindGoogle)
+	if err != nil {
+		t.Fatalf("idempotent fenced update: %v", err)
+	}
+	if changed {
+		t.Fatal("same kind should not report changed")
+	}
+
+	changed, err = st.UpdateCalendarSourceHostKindIfURLHashCurrent(ownerCtx, src.ID, "hash-stale", CalendarHostKindApple)
+	if err != nil {
+		t.Fatalf("stale hash fenced update: %v", err)
+	}
+	if changed {
+		t.Fatal("stale url_hash must not change host_kind")
+	}
+	got, err = st.GetCalendarSource(ownerCtx, project.ID, src.ID)
+	if err != nil {
+		t.Fatalf("Get after stale: %v", err)
+	}
+	if got.HostKind != CalendarHostKindGoogle {
+		t.Fatalf("stale write mutated host_kind=%q", got.HostKind)
 	}
 }
 

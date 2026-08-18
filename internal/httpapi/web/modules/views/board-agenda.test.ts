@@ -136,4 +136,87 @@ describe('agenda virtual lane', () => {
     expect(html).toContain('Pickup');
     expect(html).not.toContain('No events today.');
   });
+
+  it('renders Google and Apple host badges and omits a badge for other', async () => {
+    const i18n = await import('../i18n/index.js');
+    await i18n.initI18n({ locale: 'en', loadLocale: vi.fn(async () => enCatalog) });
+    const google = renderAgendaEventCard(
+      {
+        id: '3:pickup:1',
+        sourceId: 3,
+        calendarName: 'Family',
+        title: 'Pickup',
+        startsAt: '2026-08-17T20:00:00Z',
+        endsAt: '2026-08-17T20:30:00Z',
+        allDay: false,
+        location: '',
+        provider: 'ics_feed',
+        hostKind: 'google',
+      },
+      'UTC',
+    );
+    expect(google).toContain('/assets/calendar/google.webp');
+    expect(google).toContain('card__agenda-badge--google');
+    expect(google).toContain('role="img"');
+    expect(google).toContain('alt=""');
+    expect(google).toContain(`aria-label="${enCatalog['board.agenda.badge.google']}"`);
+    expect(google).not.toContain('/assets/calendar/apple.webp');
+
+    const apple = renderAgendaEventCard(
+      {
+        id: '3:pickup:1',
+        sourceId: 3,
+        calendarName: 'Family',
+        title: 'Pickup',
+        startsAt: '2026-08-17T20:00:00Z',
+        endsAt: '2026-08-17T20:30:00Z',
+        allDay: false,
+        location: '',
+        provider: 'ics_feed',
+        hostKind: 'apple',
+      },
+      'UTC',
+    );
+    expect(apple).toContain('/assets/calendar/apple.webp');
+    expect(apple).toContain('card__agenda-badge--apple');
+    expect(apple).toContain('role="img"');
+    expect(apple).toContain('alt=""');
+    expect(apple).toContain(`aria-label="${enCatalog['board.agenda.badge.apple']}"`);
+    expect(apple).not.toContain('/assets/calendar/google.webp');
+
+    const other = renderAgendaEventCard(
+      {
+        id: '3:pickup:1',
+        sourceId: 3,
+        calendarName: 'Family',
+        title: 'Pickup',
+        startsAt: '2026-08-17T20:00:00Z',
+        endsAt: '2026-08-17T20:30:00Z',
+        allDay: false,
+        location: '',
+        provider: 'ics_feed',
+        hostKind: 'other',
+      },
+      'UTC',
+    );
+    expect(other).not.toContain('card__agenda-badge');
+    expect(other).not.toContain('/assets/calendar/');
+
+    const missing = renderAgendaEventCard(
+      {
+        id: '3:pickup:1',
+        sourceId: 3,
+        calendarName: 'Family',
+        title: 'Pickup',
+        startsAt: '2026-08-17T20:00:00Z',
+        endsAt: '2026-08-17T20:30:00Z',
+        allDay: false,
+        location: '',
+        provider: 'ics_feed',
+      },
+      'UTC',
+    );
+    expect(missing).not.toContain('card__agenda-badge');
+    expect(missing).not.toContain('/assets/calendar/');
+  });
 });

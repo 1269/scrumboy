@@ -17,13 +17,27 @@ export function renderAgendaEventCard(event: AgendaEvent, timezone: string): str
   const calendar = event.calendarName ? escapeHTML(event.calendarName) : '';
   const location = event.location ? `<div class="muted">${escapeHTML(event.location)}</div>` : '';
   const meta = [timeLabel, calendar].filter(Boolean).join(' · ');
+  const badge = renderAgendaHostBadge(event.hostKind);
   return `
     <article class="card card--agenda" data-agenda-event-id="${escapeHTML(event.id)}">
       <div class="card__title">${escapeHTML(event.title || '')}</div>
       ${meta ? `<div class="muted card__agenda-meta">${escapeHTML(meta)}</div>` : ''}
       ${location}
+      ${badge}
     </article>
   `;
+}
+
+function renderAgendaHostBadge(hostKind: string | undefined): string {
+  if (hostKind === 'google') {
+    const label = escapeHTML(t('board.agenda.badge.google'));
+    return `<span class="card__agenda-badge card__agenda-badge--google" role="img" aria-label="${label}"><img src="/assets/calendar/google.webp" alt=""></span>`;
+  }
+  if (hostKind === 'apple') {
+    const label = escapeHTML(t('board.agenda.badge.apple'));
+    return `<span class="card__agenda-badge card__agenda-badge--apple" role="img" aria-label="${label}"><img src="/assets/calendar/apple.webp" alt=""></span>`;
+  }
+  return '';
 }
 
 export function buildAgendaColumnHtml(board: Board, activeMobileTab: string | null | undefined): string {

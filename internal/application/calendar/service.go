@@ -72,6 +72,7 @@ type SourceStore interface {
 	GetCalendarSource(ctx context.Context, projectID, sourceID int64) (store.CalendarSource, error)
 	CreateCalendarSource(ctx context.Context, projectID int64, in store.CreateCalendarSourceInput) (store.CalendarSource, error)
 	UpdateCalendarSource(ctx context.Context, projectID, sourceID int64, in store.UpdateCalendarSourceInput) (store.CalendarSource, error)
+	UpdateCalendarSourceHostKindIfURLHashCurrent(ctx context.Context, sourceID int64, expectedURLHash, hostKind string) (changed bool, err error)
 	DeleteCalendarSource(ctx context.Context, projectID, sourceID int64) error
 }
 
@@ -239,6 +240,7 @@ func (p *PreparedREST) Create(command CreateSourceCommand) (SourceView, error) {
 		Enabled:   enabled,
 		SecretEnc: secretEnc,
 		URLHash:   hashCalendarURL(canonical),
+		HostKind:  string(calendarHostKind(canonical)),
 	})
 	if err != nil {
 		return SourceView{}, err
@@ -266,8 +268,10 @@ func (p *PreparedREST) Update(command UpdateSourceCommand) (SourceView, error) {
 			return SourceView{}, err
 		}
 		hash := hashCalendarURL(canonical)
+		kind := string(calendarHostKind(canonical))
 		in.SecretEnc = &secretEnc
 		in.URLHash = &hash
+		in.HostKind = &kind
 	}
 	updated, err := p.service.sources.UpdateCalendarSource(p.ctx, p.projectID, command.SourceID, in)
 	if err != nil {

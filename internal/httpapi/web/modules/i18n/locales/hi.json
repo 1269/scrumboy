@@ -156,6 +156,8 @@
   "board.agenda.empty": "No events today.",
   "board.agenda.stale": "Calendar may be out of date.",
   "board.agenda.allDay": "All day",
+  "board.agenda.badge.google": "Google Calendar",
+  "board.agenda.badge.apple": "Apple Calendar",
   "board.loadMoreFailed": "और लोड करना विफल",
   "board.members.addFailed": "सदस्य जोड़ना विफल",
   "board.members.addMember": "सदस्य जोड़ें",

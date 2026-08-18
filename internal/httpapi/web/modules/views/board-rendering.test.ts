@@ -134,6 +134,7 @@ describe('board topbar rendering', () => {
     expect(html).not.toContain('graph TD');
     expect(html).not.toContain('A--&gt;B');
     expect(html).not.toContain('todo-mermaid');
+    expect(html).not.toContain('card__agenda-badge');
   });
 
   it('always renders a drag handle, even under chronological sort where only cross-lane drag is allowed', () => {

@@ -156,6 +156,8 @@
   "board.agenda.empty": "No events today.",
   "board.agenda.stale": "Calendar may be out of date.",
   "board.agenda.allDay": "All day",
+  "board.agenda.badge.google": "Google Calendar",
+  "board.agenda.badge.apple": "Apple Calendar",
   "board.loadMoreFailed": "더 불러오기에 실패했습니다",
   "board.members.addFailed": "멤버 추가에 실패했습니다",
   "board.members.addMember": "멤버 추가",

@@ -40,6 +40,7 @@ type AgendaEvent struct {
 	AllDay       bool
 	Location     string
 	Provider     string
+	HostKind     string
 }
 
 type AgendaView struct {
@@ -199,6 +200,7 @@ func (s *AgendaService) ReadAgenda(ctx context.Context, projectID int64) (Agenda
 				AllDay:       ev.AllDay,
 				Location:     ev.Location,
 				Provider:     SourceTypeICSFeed,
+				HostKind:     persistedHostKind(src.HostKind),
 			})
 		}
 	}
@@ -325,8 +327,19 @@ func (s *AgendaService) doRefresh(ctx context.Context, projectID int64, src stor
 	if err != nil {
 		return s.failRefresh(ctx, src.ID, existing, haveExisting, err, expectedHash, expectedTZ)
 	}
+	kindChanged, err := s.backfillHostKind(ctx, src.ID, expectedHash, string(plain))
+	if err != nil {
+		return err
+	}
+	publishKindChange := func() {
+		if kindChanged {
+			s.refresh.PublishBoardRefresh(ctx, projectID, refreshReasonAgendaUpdated)
+		}
+	}
 	if s.fetcher == nil {
-		return s.failRefresh(ctx, src.ID, existing, haveExisting, ErrFeedRequest, expectedHash, expectedTZ)
+		failErr := s.failRefresh(ctx, src.ID, existing, haveExisting, ErrFeedRequest, expectedHash, expectedTZ)
+		publishKindChange()
+		return failErr
 	}
 	fetched, err := s.fetcher.Fetch(ctx, FetchRequest{
 		URL:          string(plain),
@@ -335,26 +348,35 @@ func (s *AgendaService) doRefresh(ctx context.Context, projectID int64, src stor
 	})
 	now := s.now().UTC()
 	if err != nil {
-		return s.failRefresh(ctx, src.ID, existing, haveExisting, err, expectedHash, expectedTZ)
+		failErr := s.failRefresh(ctx, src.ID, existing, haveExisting, err, expectedHash, expectedTZ)
+		publishKindChange()
+		return failErr
 	}
 	if fetched.NotModified {
 		if !haveExisting {
-			return s.failRefresh(ctx, src.ID, existing, false, ErrFeedRequest, expectedHash, expectedTZ)
+			failErr := s.failRefresh(ctx, src.ID, existing, false, ErrFeedRequest, expectedHash, expectedTZ)
+			publishKindChange()
+			return failErr
 		}
 		if err := s.snapshots.TouchCalendarFeedSnapshotIfCurrent(ctx, src.ID, now, fetched.ETag, fetched.LastModified, expectedHash, expectedTZ); err != nil {
 			return err
 		}
+		publishKindChange()
 		return nil
 	}
 
 	windowStart, windowEnd := expansionWindow(s.now(), loc)
 	expanded, err := ics.Expand(fetched.Body, loc, windowStart, windowEnd)
 	if err != nil {
-		return s.failRefresh(ctx, src.ID, existing, haveExisting, err, expectedHash, expectedTZ)
+		failErr := s.failRefresh(ctx, src.ID, existing, haveExisting, err, expectedHash, expectedTZ)
+		publishKindChange()
+		return failErr
 	}
 	encoded, err := encodeCachedEvents(expanded)
 	if err != nil {
-		return s.failRefresh(ctx, src.ID, existing, haveExisting, ics.ErrInvalidCalendar, expectedHash, expectedTZ)
+		failErr := s.failRefresh(ctx, src.ID, existing, haveExisting, ics.ErrInvalidCalendar, expectedHash, expectedTZ)
+		publishKindChange()
+		return failErr
 	}
 	changed := !haveExisting || existing.EventsJSON != encoded
 	etag := fetched.ETag
@@ -375,10 +397,24 @@ func (s *AgendaService) doRefresh(ctx context.Context, projectID int64, src stor
 	}, expectedHash, expectedTZ); err != nil {
 		return err
 	}
-	if changed {
+	if changed || kindChanged {
 		s.refresh.PublishBoardRefresh(ctx, projectID, refreshReasonAgendaUpdated)
 	}
 	return nil
+}
+
+func (s *AgendaService) backfillHostKind(ctx context.Context, sourceID int64, expectedHash, canonicalURL string) (bool, error) {
+	kind := string(calendarHostKind(canonicalURL))
+	return s.sources.UpdateCalendarSourceHostKindIfURLHashCurrent(ctx, sourceID, expectedHash, kind)
+}
+
+func persistedHostKind(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case string(CalendarHostKindGoogle), string(CalendarHostKindApple), string(CalendarHostKindOther):
+		return strings.TrimSpace(raw)
+	default:
+		return string(CalendarHostKindOther)
+	}
 }
 
 func (s *AgendaService) failRefresh(ctx context.Context, sourceID int64, existing store.CalendarFeedSnapshot, haveExisting bool, cause error, urlHash, timezone string) error {

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -87,11 +88,14 @@ END:VCALENDAR
 	if err != nil {
 		t.Fatalf("CreateCalendarSource: %v", err)
 	}
+	today := time.Now().UTC()
+	startsAt := time.Date(today.Year(), today.Month(), today.Day(), 15, 0, 0, 0, time.UTC)
+	endsAt := startsAt.Add(time.Hour)
 	if err := st.UpsertCalendarFeedSnapshot(ctxOwner, store.CalendarFeedSnapshot{
 		SourceID:   src.ID,
-		FetchedAt:  time.Now().UTC(),
+		FetchedAt:  today,
 		Status:     store.CalendarSnapshotStatusOK,
-		EventsJSON: `[{"uid":"pickup","title":"Pickup","startsAt":"2026-08-17T15:00:00Z","endsAt":"2026-08-17T16:00:00Z","allDay":false,"location":""}]`,
+		EventsJSON: fmt.Sprintf(`[{"uid":"pickup","title":"Pickup","startsAt":%q,"endsAt":%q,"allDay":false,"location":""}]`, startsAt.Format(time.RFC3339), endsAt.Format(time.RFC3339)),
 	}); err != nil {
 		t.Fatalf("UpsertCalendarFeedSnapshot: %v", err)
 	}
@@ -106,8 +110,11 @@ END:VCALENDAR
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET board: status=%d body=%s", resp.StatusCode, string(body))
 	}
-	if strings.Contains(string(body), "super-secret-token") {
+	if strings.Contains(string(body), "super-secret-token") || strings.Contains(string(body), "calendar.example.com/private") {
 		t.Fatal("board GET leaked calendar URL")
+	}
+	if strings.Contains(string(body), "hash-family") {
+		t.Fatal("board GET leaked url_hash")
 	}
 	if fetcher.callCount() != 0 {
 		t.Fatalf("board GET fetch calls=%d, want 0", fetcher.callCount())
@@ -133,6 +140,20 @@ END:VCALENDAR
 	}
 	if agenda["timezone"] != "UTC" {
 		t.Fatalf("timezone=%v", agenda["timezone"])
+	}
+	events, _ := agenda["events"].([]any)
+	if len(events) < 1 {
+		t.Fatalf("agenda events=%v", agenda["events"])
+	}
+	ev, _ := events[0].(map[string]any)
+	if ev["provider"] != "ics_feed" {
+		t.Fatalf("provider=%v", ev["provider"])
+	}
+	if ev["hostKind"] != "other" {
+		t.Fatalf("hostKind=%v, want other", ev["hostKind"])
+	}
+	if _, ok := ev["urlHash"]; ok {
+		t.Fatal("event leaked urlHash")
 	}
 
 	disabled, err := st.UpdateProjectAgendaSettings(ctxOwner, project.ID, boolPtr(false), nil)

@@ -156,6 +156,8 @@
   "board.agenda.empty": "No events today.",
   "board.agenda.stale": "Calendar may be out of date.",
   "board.agenda.allDay": "All day",
+  "board.agenda.badge.google": "Google Calendar",
+  "board.agenda.badge.apple": "Apple Calendar",
   "board.loadMoreFailed": "আরও লোড ব্যর্থ",
   "board.members.addFailed": "সদস্য যোগ ব্যর্থ",
   "board.members.addMember": "সদস্য যোগ",
