@@ -50,6 +50,11 @@ describe('agenda virtual lane', () => {
     expect(html).toContain('card--agenda');
     expect(html).toContain('Pickup');
     expect(html).toContain('data-agenda-event-id="3:pickup:1"');
+    const timeOpts: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' };
+    const start = new Date('2026-08-17T20:00:00Z').toLocaleTimeString(undefined, timeOpts);
+    const end = new Date('2026-08-17T20:30:00Z').toLocaleTimeString(undefined, timeOpts);
+    expect(html).toContain(`${start} - ${end}`);
+    expect(html).not.toContain('Family');
     expect(html).not.toContain('data-todo-id');
     expect(html).not.toContain('data-todo-local-id');
     expect(html).not.toContain('card__drag-handle');
@@ -83,6 +88,8 @@ describe('agenda virtual lane', () => {
     );
     expect(html).toContain('Holiday');
     expect(html).toContain('All day');
+    expect(html).not.toContain('Family');
+    expect(html).not.toContain(' - ');
     expect(html).not.toContain('card--selected');
     expect(html).not.toContain('checkbox');
     expect(AGENDA_COLUMN_KEY).toBe('agenda');

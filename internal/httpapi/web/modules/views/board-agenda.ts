@@ -14,14 +14,12 @@ export function agendaEvents(board: Board): AgendaEvent[] {
 
 export function renderAgendaEventCard(event: AgendaEvent, timezone: string): string {
   const timeLabel = formatAgendaEventTime(event, timezone);
-  const calendar = event.calendarName ? escapeHTML(event.calendarName) : '';
   const location = event.location ? `<div class="muted">${escapeHTML(event.location)}</div>` : '';
-  const meta = [timeLabel, calendar].filter(Boolean).join(' · ');
   const badge = renderAgendaHostBadge(event.hostKind);
   return `
     <article class="card card--agenda" data-agenda-event-id="${escapeHTML(event.id)}">
       <div class="card__title">${escapeHTML(event.title || '')}</div>
-      ${meta ? `<div class="muted card__agenda-meta">${escapeHTML(meta)}</div>` : ''}
+      ${timeLabel ? `<div class="muted card__agenda-meta">${escapeHTML(timeLabel)}</div>` : ''}
       ${location}
       ${badge}
     </article>
@@ -76,17 +74,27 @@ function formatAgendaEventTime(event: AgendaEvent, timezone: string): string {
   if (event.allDay) {
     return t('board.agenda.allDay');
   }
-  const start = new Date(event.startsAt);
-  if (Number.isNaN(start.getTime())) {
+  const startLabel = formatAgendaClockTime(event.startsAt, timezone);
+  if (!startLabel) {
     return '';
   }
+  const endLabel = formatAgendaClockTime(event.endsAt, timezone);
+  return endLabel ? `${startLabel} - ${endLabel}` : startLabel;
+}
+
+function formatAgendaClockTime(iso: string, timezone: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  const options: Intl.DateTimeFormatOptions = {
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: timezone || 'UTC',
+  };
   try {
-    return start.toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-      timeZone: timezone || 'UTC',
-    });
+    return date.toLocaleTimeString(undefined, options);
   } catch {
-    return start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
 }
