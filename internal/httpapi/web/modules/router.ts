@@ -24,6 +24,11 @@ import {
   WRAP_LANES_PREFERENCE_KEY,
 } from './core/wrap-lanes-preferences.js';
 import {
+  AGENDA_FULL_DAY_PREFERENCE_KEY,
+  loadAgendaFullDayPreferenceFromServer,
+  onAgendaFullDayAuthUserChanged,
+} from './core/agenda-full-day-preferences.js';
+import {
   BOARD_TODO_SORT_PREFERENCE_KEY,
   boardTodoSortUrlParam,
   getBoardTodoSortPreference,
@@ -148,6 +153,9 @@ async function routeOnceBody(): Promise<void> {
     }
 
     setUser(newUser);
+    if (oldUserId !== newUserId) {
+      onAgendaFullDayAuthUserChanged(newUserId);
+    }
     setBootstrapAvailable(!!(st && st.bootstrapAvailable));
     setPushConfigured(!!(st && st.pushConfigured));
     setPushStatus(newUser ? st.push : null);
@@ -248,6 +256,10 @@ async function routeOnceBody(): Promise<void> {
 
       await loadWrapLanesPreferenceFromServer(() =>
         apiFetch<{ value: string }>(`/api/user/preferences?key=${WRAP_LANES_PREFERENCE_KEY}`),
+      );
+
+      await loadAgendaFullDayPreferenceFromServer(() =>
+        apiFetch<{ value: string }>(`/api/user/preferences?key=${AGENDA_FULL_DAY_PREFERENCE_KEY}`),
       );
 
       await loadBoardTodoSortPreferenceFromServer(() =>

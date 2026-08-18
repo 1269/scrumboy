@@ -471,6 +471,213 @@ describe('router wrap lanes hydration', () => {
   });
 });
 
+describe('router agenda full day hydration', () => {
+  function userBob() {
+    return {
+      id: 8,
+      email: 'bob@example.com',
+      name: 'Bob',
+      isBootstrap: false,
+      systemRole: 'user',
+      twoFactorEnabled: false,
+    };
+  }
+
+  function installSignedInAuth(user: ReturnType<typeof userStatus>, agendaFullDayValue: string): void {
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/auth/status') {
+        return {
+          user,
+          bootstrapAvailable: false,
+          mode: 'full',
+          pushConfigured: false,
+          selfServicePasswordResetEnabled: false,
+          oidcEnabled: false,
+          localAuthEnabled: true,
+          wallEnabled: false,
+          markdownNotesEnabled: false,
+          mermaidNotesEnabled: false,
+        };
+      }
+      if (url === '/api/me') {
+        return user;
+      }
+      if (url.includes('key=agendaFullDay')) {
+        return { value: agendaFullDayValue };
+      }
+      if (url.startsWith('/api/user/preferences?key=')) {
+        return { value: '' };
+      }
+      throw new Error(`unexpected apiFetch url: ${url}`);
+    });
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    window.history.replaceState({}, '', '/');
+    localStorage.clear();
+    apiFetchMock.mockReset();
+    renderProjectsMock.mockReset();
+    renderProjectsMock.mockResolvedValue(undefined);
+    loadUserThemeMock.mockClear();
+    applyWallpaperForAuthContextMock.mockClear();
+    loadUserWallpaperMock.mockClear();
+  });
+
+  afterEach(() => {
+    window.history.replaceState({}, '', '/');
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it('defaults missing server preference to fit', async () => {
+    const prefs = await import('./core/agenda-full-day-preferences.js');
+    localStorage.setItem(prefs.AGENDA_FULL_DAY_STORAGE_KEY, 'true');
+    installSignedInAuth(userBob(), '');
+    const mod = await loadRouterModule();
+
+    await mod.router();
+
+    expect(prefs.getAgendaTimelineMode()).toBe('fit');
+  });
+
+  it('does not carry full_day from user A to user B on login', async () => {
+    const prefs = await import('./core/agenda-full-day-preferences.js');
+    localStorage.setItem(prefs.AGENDA_FULL_DAY_STORAGE_KEY, 'true');
+    installSignedInAuth(userStatus(), 'true');
+    const mod = await loadRouterModule();
+    await mod.router();
+    expect(prefs.getAgendaTimelineMode()).toBe('full_day');
+
+    const mutations = await import('./state/mutations.js');
+    mutations.setAuthStatusChecked(false);
+    installSignedInAuth(userBob(), '');
+    await mod.router();
+
+    expect(prefs.getAgendaTimelineMode()).toBe('fit');
+  });
+
+  it('keeps the same user full_day when preference hydration fails', async () => {
+    const prefs = await import('./core/agenda-full-day-preferences.js');
+    installSignedInAuth(userStatus(), 'true');
+    const mod = await loadRouterModule();
+    await mod.router();
+    expect(prefs.getAgendaTimelineMode()).toBe('full_day');
+
+    const mutations = await import('./state/mutations.js');
+    mutations.setAuthStatusChecked(false);
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/auth/status') {
+        return {
+          user: userStatus(),
+          bootstrapAvailable: false,
+          mode: 'full',
+          pushConfigured: false,
+          selfServicePasswordResetEnabled: false,
+          oidcEnabled: false,
+          localAuthEnabled: true,
+          wallEnabled: false,
+          markdownNotesEnabled: false,
+          mermaidNotesEnabled: false,
+        };
+      }
+      if (url === '/api/me') {
+        return userStatus();
+      }
+      if (url.includes('key=agendaFullDay')) {
+        throw new Error('network');
+      }
+      if (url.startsWith('/api/user/preferences?key=')) {
+        return { value: '' };
+      }
+      throw new Error(`unexpected apiFetch url: ${url}`);
+    });
+    await mod.router();
+
+    expect(prefs.getAgendaTimelineMode()).toBe('full_day');
+  });
+
+  it('preserves same-user full_day on cold reload when hydration fails', async () => {
+    const prefs = await import('./core/agenda-full-day-preferences.js');
+    const user = userStatus();
+    localStorage.setItem(prefs.AGENDA_FULL_DAY_STORAGE_KEY, 'true');
+    localStorage.setItem(prefs.AGENDA_FULL_DAY_OWNER_KEY, String(user.id));
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/auth/status') {
+        return {
+          user,
+          bootstrapAvailable: false,
+          mode: 'full',
+          pushConfigured: false,
+          selfServicePasswordResetEnabled: false,
+          oidcEnabled: false,
+          localAuthEnabled: true,
+          wallEnabled: false,
+          markdownNotesEnabled: false,
+          mermaidNotesEnabled: false,
+        };
+      }
+      if (url === '/api/me') {
+        return user;
+      }
+      if (url.includes('key=agendaFullDay')) {
+        throw new Error('network');
+      }
+      if (url.startsWith('/api/user/preferences?key=')) {
+        return { value: '' };
+      }
+      throw new Error(`unexpected apiFetch url: ${url}`);
+    });
+    const mod = await loadRouterModule();
+
+    await mod.router();
+
+    expect(prefs.getAgendaTimelineMode()).toBe('full_day');
+    expect(localStorage.getItem(prefs.AGENDA_FULL_DAY_STORAGE_KEY)).toBe('true');
+    expect(localStorage.getItem(prefs.AGENDA_FULL_DAY_OWNER_KEY)).toBe(String(user.id));
+  });
+
+  it('does not leak full_day to another user when their hydration fails', async () => {
+    const prefs = await import('./core/agenda-full-day-preferences.js');
+    installSignedInAuth(userStatus(), 'true');
+    const mod = await loadRouterModule();
+    await mod.router();
+    expect(prefs.getAgendaTimelineMode()).toBe('full_day');
+
+    const mutations = await import('./state/mutations.js');
+    mutations.setAuthStatusChecked(false);
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/auth/status') {
+        return {
+          user: userBob(),
+          bootstrapAvailable: false,
+          mode: 'full',
+          pushConfigured: false,
+          selfServicePasswordResetEnabled: false,
+          oidcEnabled: false,
+          localAuthEnabled: true,
+          wallEnabled: false,
+          markdownNotesEnabled: false,
+          mermaidNotesEnabled: false,
+        };
+      }
+      if (url === '/api/me') {
+        return userBob();
+      }
+      if (url.includes('key=agendaFullDay')) {
+        throw new Error('network');
+      }
+      if (url.startsWith('/api/user/preferences?key=')) {
+        return { value: '' };
+      }
+      throw new Error(`unexpected apiFetch url: ${url}`);
+    });
+    await mod.router();
+
+    expect(prefs.getAgendaTimelineMode()).toBe('fit');
+  });
+});
+
 describe('router board todo sort hydration', () => {
   function userBob() {
     return {

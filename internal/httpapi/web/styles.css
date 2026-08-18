@@ -4098,7 +4098,59 @@ label:has(input[type="radio"][name="importMode"]:disabled) {
 }
 
 .col--agenda .col__list {
+  gap: 0;
+  display: block;
+  padding: 0;
+  min-height: 0;
+}
+
+.col__agenda-status,
+.col__agenda-empty {
+  padding: var(--s-10);
+}
+
+.agenda-allday {
+  display: flex;
+  flex-direction: column;
   gap: var(--s-8);
+  padding: var(--s-10);
+}
+
+.agenda-day {
+  --agenda-hour-height: 48px;
+  position: relative;
+}
+
+.agenda-hour {
+  height: var(--agenda-hour-height);
+  box-sizing: border-box;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+}
+
+.agenda-hour__label {
+  width: 3.25rem;
+  flex-shrink: 0;
+  font-size: var(--fs-12);
+  line-height: 1.2;
+  padding: 2px 6px 0 8px;
+}
+
+.agenda-day__events {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 3.25rem;
+}
+
+.card--agenda-timed {
+  position: absolute;
+  overflow: hidden;
+  box-sizing: border-box;
+  margin: 0;
+  padding-bottom: var(--s-10);
 }
 
 .card--agenda {

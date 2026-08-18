@@ -1190,7 +1190,7 @@ export async function renderSettingsModal(options) {
     // Charts tab only applies in durable project board view (not Dashboard/Projects/Temporary Boards, not anonymous mode, not temporary boards)
     const board = getBoard();
     const isTemporaryBoard = !!(board?.project?.expiresAt);
-    const showCalendarTab = !!slug && hasProjectAccess && myMember?.role === "maintainer" && !isTemporaryBoard;
+    const showCalendarTab = !!slug && hasProjectAccess && !!currentUser && !!myMember && !isTemporaryBoard;
     const sprintsEnabled = board?.project?.sprintsEnabled !== false;
     const showChartsTab = !!slug &&
         hasProjectAccess &&
@@ -1681,7 +1681,7 @@ export async function renderSettingsModal(options) {
     }
     let calendarHTML = "";
     if (showCalendarTab && getSettingsActiveTab() === "calendar") {
-        calendarHTML = await loadCalendarTabContent();
+        calendarHTML = await loadCalendarTabContent({ canManageCalendar: myMember?.role === "maintainer" });
     }
     let workflowHTML = "";
     if (showWorkflowTab && getSettingsActiveTab() === "workflow" && slug) {

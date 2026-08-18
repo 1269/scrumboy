@@ -2,6 +2,11 @@ import { apiFetch } from '../api.js';
 import { getSlug } from '../state/selectors.js';
 import { confirmDelete, escapeHTML, showToast } from '../utils.js';
 import { apiErrorMessageOrRaw, t } from '../i18n/index.js';
+import {
+  getAgendaFullDayPreference,
+  saveAgendaFullDayPreference,
+} from '../core/agenda-full-day-preferences.js';
+import { syncOpenBoardAgendaLayout } from '../views/board-agenda.js';
 
 export type CalendarSourceDTO = {
   id: number;
@@ -22,6 +27,10 @@ export type CalendarSourcesResponse = {
 type BindCalendarTabOptions = {
   signal: AbortSignal;
   rerender: () => Promise<void>;
+};
+
+export type LoadCalendarTabOptions = {
+  canManageCalendar?: boolean;
 };
 
 const DEFAULT_AGENDA_TIMEZONE = 'UTC';
@@ -80,10 +89,14 @@ function renderTimezoneOptions(savedTimezone: string): string {
     .join('');
 }
 
-export async function loadCalendarTabContent(): Promise<string> {
+export async function loadCalendarTabContent(options: LoadCalendarTabOptions = {}): Promise<string> {
   const slug = getSlug();
   if (!slug) {
     return `<div class="muted" data-i18n-text="settings.calendar.error.noProject">Open a durable board to configure Agenda.</div>`;
+  }
+  const canManage = options.canManageCalendar !== false;
+  if (!canManage) {
+    return `${renderTimelinePreferenceHTML()}`;
   }
   try {
     cachedCalendar = await apiFetch<CalendarSourcesResponse>(`/api/board/${slug}/calendar-sources`);
@@ -91,6 +104,17 @@ export async function loadCalendarTabContent(): Promise<string> {
     return `<div class="muted">${escapeHTML(apiErrorMessageOrRaw(err, { fallbackKey: 'settings.calendar.error.loadFailed' }))}</div>`;
   }
   return renderCalendarTabHTML(cachedCalendar);
+}
+
+function renderTimelinePreferenceHTML(): string {
+  return `
+    <div class="settings-section">
+      <label class="field" style="display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" id="agendaFullDayToggle" ${getAgendaFullDayPreference() ? 'checked' : ''} />
+        <span data-i18n-text="settings.calendar.timeline.label">Show full day</span>
+      </label>
+      <p class="muted" data-i18n-text="settings.calendar.timeline.hint">Only your Agenda layout. Other members keep their own choice.</p>
+    </div>`;
 }
 
 function renderCalendarTabHTML(data: CalendarSourcesResponse): string {
@@ -138,6 +162,7 @@ function renderCalendarTabHTML(data: CalendarSourcesResponse): string {
       </label>
       <p class="muted" data-i18n-text="settings.calendar.timezone.hint">Used for today's events. All members see Agenda in this timezone.</p>
     </div>
+    ${renderTimelinePreferenceHTML()}
     <div class="settings-section">
       <h3 data-i18n-text="settings.calendar.add.title">Add ICS feed</h3>
       <label class="field">
@@ -161,6 +186,28 @@ export function bindCalendarTabInteractions(options: BindCalendarTabOptions): vo
   const slug = getSlug();
   if (!slug) return;
   const { signal, rerender } = options;
+
+  const fullDayToggle = document.getElementById('agendaFullDayToggle') as HTMLInputElement | null;
+  fullDayToggle?.addEventListener(
+    'change',
+    async () => {
+      const previous = getAgendaFullDayPreference();
+      const next = fullDayToggle.checked;
+      fullDayToggle.disabled = true;
+      const saving = saveAgendaFullDayPreference(next);
+      syncOpenBoardAgendaLayout();
+      try {
+        await saving;
+      } catch (err: unknown) {
+        fullDayToggle.checked = previous;
+        syncOpenBoardAgendaLayout();
+        showToast(apiErrorMessageOrRaw(err, { fallbackKey: 'settings.calendar.toast.timelineFailed' }));
+      } finally {
+        fullDayToggle.disabled = false;
+      }
+    },
+    { signal },
+  );
 
   const enabledToggle = document.getElementById('agendaEnabledToggle') as HTMLInputElement | null;
   enabledToggle?.addEventListener(

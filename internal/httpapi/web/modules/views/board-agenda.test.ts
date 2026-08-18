@@ -1,8 +1,15 @@
 // @vitest-environment happy-dom
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Board } from '../types.js';
-import { AGENDA_COLUMN_KEY, buildAgendaColumnHtml, renderAgendaEventCard } from './board-agenda.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgendaEvent, Board } from '../types.js';
+import {
+  AGENDA_COLUMN_KEY,
+  agendaDayWindow,
+  buildAgendaColumnHtml,
+  layoutAgendaTimedEvents,
+  renderAgendaEventCard,
+} from './board-agenda.js';
 import { getBoardColumns, visibleBoardLaneCount } from './board-rendering.js';
+import { setAgendaFullDayPreference } from '../core/agenda-full-day-preferences.js';
 import enCatalog from '../i18n/locales/en.json';
 
 function agendaBoard(): Board {
@@ -37,6 +44,11 @@ function agendaBoard(): Board {
 }
 
 describe('agenda virtual lane', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    setAgendaFullDayPreference(false);
+  });
+
   afterEach(async () => {
     const i18n = await import('../i18n/index.js');
     i18n.resetI18nForTests();
@@ -238,5 +250,214 @@ describe('agenda virtual lane', () => {
     );
     expect(missing).not.toContain('card__agenda-badge');
     expect(missing).not.toContain('/assets/calendar/');
+  });
+});
+
+function timedEvent(id: string, startsAt: string, endsAt: string, extras: Partial<AgendaEvent> = {}): AgendaEvent {
+  return {
+    id,
+    sourceId: 3,
+    calendarName: 'Family',
+    title: extras.title || id,
+    startsAt,
+    endsAt,
+    allDay: false,
+    location: '',
+    provider: 'ics_feed',
+    ...extras,
+  };
+}
+
+describe('agenda day window and timed layout', () => {
+  const utcNoon = new Date('2026-08-17T12:00:00Z');
+
+  it('uses a fit window from first timed hour to last timed hour and ignores all-day events', () => {
+    const events = [
+      timedEvent('a', '2026-08-17T09:15:00Z', '2026-08-17T09:45:00Z'),
+      timedEvent('b', '2026-08-17T15:00:00Z', '2026-08-17T16:00:00Z'),
+      {
+        ...timedEvent('holiday', '2026-08-17T00:00:00Z', '2026-08-18T00:00:00Z'),
+        allDay: true,
+        title: 'Holiday',
+      },
+    ];
+    expect(agendaDayWindow(events, 'UTC', 'fit', utcNoon)).toEqual({ startMinute: 540, endMinute: 960 });
+    expect(agendaDayWindow(events.filter((event) => event.allDay), 'UTC', 'fit', utcNoon)).toBeNull();
+  });
+
+  it('full_day is always 00:00-24:00 even with no events', () => {
+    expect(agendaDayWindow([], 'UTC', 'full_day', utcNoon)).toEqual({ startMinute: 0, endMinute: 1440 });
+  });
+
+  it('places overlapping events in two columns and a later cluster at full width', () => {
+    const events = [
+      timedEvent('A', '2026-08-17T09:00:00Z', '2026-08-17T10:00:00Z'),
+      timedEvent('B', '2026-08-17T09:30:00Z', '2026-08-17T10:30:00Z'),
+      timedEvent('C', '2026-08-17T15:00:00Z', '2026-08-17T16:00:00Z'),
+    ];
+    const window = agendaDayWindow(events, 'UTC', 'fit', utcNoon)!;
+    const layout = layoutAgendaTimedEvents(events, 'UTC', window, utcNoon);
+    const byId = Object.fromEntries(layout.map((item) => [item.event.id, item]));
+    expect(byId.A.columnCount).toBe(2);
+    expect(byId.B.columnCount).toBe(2);
+    expect(byId.A.column).not.toBe(byId.B.column);
+    expect(byId.C.column).toBe(0);
+    expect(byId.C.columnCount).toBe(1);
+  });
+
+  it('lets sequential events occupy full width', () => {
+    const events = [
+      timedEvent('A', '2026-08-17T10:00:00Z', '2026-08-17T11:00:00Z'),
+      timedEvent('B', '2026-08-17T11:00:00Z', '2026-08-17T12:00:00Z'),
+    ];
+    const window = { startMinute: 600, endMinute: 720 };
+    const layout = layoutAgendaTimedEvents(events, 'UTC', window, utcNoon);
+    expect(layout).toHaveLength(2);
+    expect(layout.every((item) => item.columnCount === 1 && item.column === 0)).toBe(true);
+  });
+
+  it('keeps all-day events out of timed packing', () => {
+    const events = [
+      {
+        ...timedEvent('holiday', '2026-08-17T00:00:00Z', '2026-08-18T00:00:00Z'),
+        allDay: true,
+        title: 'Holiday',
+      },
+      timedEvent('A', '2026-08-17T10:00:00Z', '2026-08-17T11:00:00Z'),
+    ];
+    const window = { startMinute: 0, endMinute: 1440 };
+    const layout = layoutAgendaTimedEvents(events, 'UTC', window, utcNoon);
+    expect(layout.map((item) => item.event.id)).toEqual(['A']);
+  });
+
+  it('clamps overnight events to the visible day', () => {
+    const event = timedEvent('night', '2026-08-17T22:00:00Z', '2026-08-18T02:00:00Z');
+    const startDay = layoutAgendaTimedEvents(
+      [event],
+      'UTC',
+      { startMinute: 0, endMinute: 1440 },
+      new Date('2026-08-17T12:00:00Z'),
+    );
+    expect(startDay[0].startMinute).toBe(1320);
+    expect(startDay[0].endMinute).toBe(1440);
+
+    const nextDay = layoutAgendaTimedEvents(
+      [event],
+      'UTC',
+      { startMinute: 0, endMinute: 1440 },
+      new Date('2026-08-18T12:00:00Z'),
+    );
+    expect(nextDay[0].startMinute).toBe(0);
+    expect(nextDay[0].endMinute).toBe(120);
+  });
+
+  it('positions spring-forward 03:00 at wall-clock minute 180, not elapsed-from-midnight', () => {
+    const now = new Date('2026-03-08T16:00:00Z');
+    const event = timedEvent('spring', '2026-03-08T07:00:00Z', '2026-03-08T08:00:00Z');
+    const layout = layoutAgendaTimedEvents(
+      [event],
+      'America/New_York',
+      { startMinute: 0, endMinute: 1440 },
+      now,
+    );
+    expect(layout[0].startMinute).toBe(180);
+    expect(layout[0].startMinute).not.toBe(120);
+  });
+
+  it('maps both fall-back 01:30 instants to the same wall-clock slot', () => {
+    const now = new Date('2026-11-01T16:00:00Z');
+    const events = [
+      timedEvent('first', '2026-11-01T05:30:00Z', '2026-11-01T06:00:00Z'),
+      timedEvent('second', '2026-11-01T06:30:00Z', '2026-11-01T07:00:00Z'),
+    ];
+    const layout = layoutAgendaTimedEvents(
+      events,
+      'America/New_York',
+      { startMinute: 0, endMinute: 1440 },
+      now,
+    );
+    expect(layout[0].startMinute).toBe(90);
+    expect(layout[1].startMinute).toBe(90);
+  });
+});
+
+describe('agenda day grid HTML', () => {
+  const now = new Date('2026-08-17T12:00:00Z');
+
+  beforeEach(() => {
+    localStorage.clear();
+    setAgendaFullDayPreference(false);
+  });
+
+  afterEach(async () => {
+    const i18n = await import('../i18n/index.js');
+    i18n.resetI18nForTests();
+  });
+
+  it('places timed cards with inline top/height and all-day events above the grid', async () => {
+    const i18n = await import('../i18n/index.js');
+    await i18n.initI18n({ locale: 'en', loadLocale: vi.fn(async () => enCatalog) });
+    const board = agendaBoard();
+    board.agenda = {
+      ...board.agenda!,
+      stale: false,
+      error: null,
+      events: [
+        {
+          ...timedEvent('holiday', '2026-08-17T00:00:00Z', '2026-08-18T00:00:00Z'),
+          allDay: true,
+          title: 'Holiday',
+        },
+        timedEvent('Pickup', '2026-08-17T20:00:00Z', '2026-08-17T20:30:00Z', { title: 'Pickup' }),
+      ],
+    };
+    const html = buildAgendaColumnHtml(board, null, now);
+    expect(html).toContain('agenda-allday');
+    expect(html).toContain('Holiday');
+    expect(html.indexOf('agenda-allday')).toBeLessThan(html.indexOf('agenda-day'));
+    expect(html).toContain('agenda-day');
+    expect(html).toContain('agenda-hour');
+    expect(html).toContain('card--agenda-timed');
+    expect(html).toMatch(/style="top:\d/);
+    expect(html).not.toContain("card.replace");
+    expect(html).toContain('Pickup');
+    expect(html).not.toContain('col__agenda-empty');
+  });
+
+  it('renders hour rows for an empty full_day grid and omits empty copy', async () => {
+    const i18n = await import('../i18n/index.js');
+    await i18n.initI18n({ locale: 'en', loadLocale: vi.fn(async () => enCatalog) });
+    setAgendaFullDayPreference(true);
+    const board = agendaBoard();
+    board.agenda = { enabled: true, timezone: 'UTC', stale: false, error: null, events: [] };
+    const html = buildAgendaColumnHtml(board, null, now);
+    expect(html).toContain('agenda-day');
+    expect(html.match(/class="agenda-hour"/g)?.length).toBe(24);
+    expect(html).not.toContain('No events today.');
+    expect(html).not.toContain('col__agenda-empty');
+  });
+
+  it('does not render a 24-hour grid in fit mode with no timed events', async () => {
+    const i18n = await import('../i18n/index.js');
+    await i18n.initI18n({ locale: 'en', loadLocale: vi.fn(async () => enCatalog) });
+    const board = agendaBoard();
+    board.agenda = {
+      enabled: true,
+      timezone: 'UTC',
+      stale: false,
+      error: null,
+      events: [
+        {
+          ...timedEvent('holiday', '2026-08-17T00:00:00Z', '2026-08-18T00:00:00Z'),
+          allDay: true,
+          title: 'Holiday',
+        },
+      ],
+    };
+    const html = buildAgendaColumnHtml(board, null, now);
+    expect(html).toContain('Holiday');
+    expect(html).toContain('agenda-allday');
+    expect(html).not.toContain('agenda-day');
+    expect(html).not.toContain('No events today.');
   });
 });

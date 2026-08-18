@@ -2,7 +2,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import enCatalog from '../i18n/locales/en.json';
 
-const selectorState: { slug: string | null } = { slug: 'alpha' };
+function emptyAgendaBoard() {
+  return {
+    project: { id: 1, name: 'Alpha', slug: 'alpha', dominantColor: '#123456' },
+    tags: [],
+    columnOrder: [{ key: 'backlog', name: 'Backlog', isDone: false }],
+    columns: { backlog: [] },
+    agenda: { enabled: true, timezone: 'UTC', stale: false, error: null, events: [] },
+  };
+}
+
+const selectorState: { slug: string | null; board: ReturnType<typeof emptyAgendaBoard> | null } = {
+  slug: 'alpha',
+  board: null,
+};
 const apiFetchMock = vi.fn();
 const intlWithSupportedValues = Intl as typeof Intl & {
   supportedValuesOf?: (key: string) => string[];
@@ -10,7 +23,12 @@ const intlWithSupportedValues = Intl as typeof Intl & {
 const originalSupportedValuesOf = intlWithSupportedValues.supportedValuesOf;
 
 vi.mock('../api.js', () => ({ apiFetch: apiFetchMock }));
-vi.mock('../state/selectors.js', () => ({ getSlug: () => selectorState.slug }));
+vi.mock('../state/selectors.js', () => ({
+  getSlug: () => selectorState.slug,
+  getBoard: () => selectorState.board,
+  getMobileTab: () => null,
+  getUser: () => ({ id: 1, name: 'Ada' }),
+}));
 vi.mock('../utils.js', () => ({
   escapeHTML: (s: string) =>
     String(s)
@@ -46,7 +64,9 @@ async function flushMicrotasks(): Promise<void> {
 describe('settings calendar tab', () => {
   beforeEach(async () => {
     selectorState.slug = 'alpha';
+    selectorState.board = null;
     apiFetchMock.mockReset();
+    localStorage.clear();
     const i18n = await import('../i18n/index.js');
     await i18n.initI18n({ locale: 'en', loadLocale: vi.fn(async () => enCatalog) });
     const { clearCalendarSettingsCache } = await import('./settings-calendar.js');
@@ -81,6 +101,7 @@ describe('settings calendar tab', () => {
     expect(html).toContain('<select class="input" id="agendaTimezoneInput">');
     expect(html).toContain('for="agendaTimezoneInput"');
     expect(html).not.toContain('id="agendaTimezoneSave"');
+    expect(html).toContain('id="agendaFullDayToggle"');
     expect(html).toContain('data-calendar-source-refresh');
   });
 
@@ -295,5 +316,111 @@ describe('settings calendar tab', () => {
     );
     expect(showToast).toHaveBeenCalledWith(enCatalog['settings.calendar.toast.titleRequired']);
     expect(rerender).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves Show full day through user preferences and does not PATCH board settings', async () => {
+    apiFetchMock.mockResolvedValue(calendarPayload);
+    const { loadCalendarTabContent, bindCalendarTabInteractions } = await import('./settings-calendar.js');
+    const prefs = await import('../core/agenda-full-day-preferences.js');
+    document.body.innerHTML = await loadCalendarTabContent();
+    bindCalendarTabInteractions({ signal: new AbortController().signal, rerender: async () => {} });
+    apiFetchMock.mockReset();
+    apiFetchMock.mockResolvedValue({});
+
+    const toggle = document.getElementById('agendaFullDayToggle') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change'));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/user/preferences', {
+      method: 'PUT',
+      body: JSON.stringify({ key: 'agendaFullDay', value: 'true' }),
+    });
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      '/api/board/alpha/settings',
+      expect.anything(),
+    );
+    expect(prefs.getAgendaTimelineMode()).toBe('full_day');
+    expect(toggle.checked).toBe(true);
+  });
+
+  it('rolls back Show full day when remote save fails', async () => {
+    apiFetchMock.mockResolvedValue(calendarPayload);
+    const { loadCalendarTabContent, bindCalendarTabInteractions } = await import('./settings-calendar.js');
+    const prefs = await import('../core/agenda-full-day-preferences.js');
+    const { buildAgendaColumnHtml } = await import('../views/board-agenda.js');
+    selectorState.board = emptyAgendaBoard();
+    const settingsHtml = await loadCalendarTabContent();
+    document.body.innerHTML = `${settingsHtml}${buildAgendaColumnHtml(selectorState.board, null)}`;
+    expect(document.querySelector('.agenda-day')).toBeNull();
+    bindCalendarTabInteractions({ signal: new AbortController().signal, rerender: async () => {} });
+    apiFetchMock.mockReset();
+    const err = Object.assign(new Error('could not save preference'), {
+      status: 500,
+      data: { error: { code: 'INTERNAL', message: 'could not save preference' } },
+    });
+    apiFetchMock.mockRejectedValueOnce(err);
+    const { showToast } = await import('../utils.js');
+
+    const toggle = document.getElementById('agendaFullDayToggle') as HTMLInputElement;
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change'));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(prefs.getAgendaTimelineMode()).toBe('fit');
+    expect(toggle.checked).toBe(false);
+    expect(document.querySelector('.agenda-day')).toBeNull();
+    expect(showToast).toHaveBeenCalled();
+    const messages = vi.mocked(showToast).mock.calls.map((call) => call[0]);
+    expect(
+      messages.some(
+        (msg) =>
+          String(msg).includes('could not save preference') ||
+          msg === enCatalog['settings.calendar.toast.timelineFailed'],
+      ),
+    ).toBe(true);
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      '/api/board/alpha/settings',
+      expect.anything(),
+    );
+  });
+
+  it('disables Show full day while its save is pending', async () => {
+    apiFetchMock.mockResolvedValue(calendarPayload);
+    const { loadCalendarTabContent, bindCalendarTabInteractions } = await import('./settings-calendar.js');
+    document.body.innerHTML = await loadCalendarTabContent();
+    bindCalendarTabInteractions({ signal: new AbortController().signal, rerender: async () => {} });
+    let resolveSave: (value: unknown) => void = () => {};
+    const pending = new Promise((resolve) => {
+      resolveSave = resolve;
+    });
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(() => pending);
+
+    const toggle = document.getElementById('agendaFullDayToggle') as HTMLInputElement;
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change'));
+    await flushMicrotasks();
+
+    expect(toggle.disabled).toBe(true);
+    resolveSave({});
+    await flushMicrotasks();
+    await flushMicrotasks();
+    expect(toggle.disabled).toBe(false);
+    expect(toggle.checked).toBe(true);
+  });
+
+  it('renders only the Show full day toggle for non-maintainers without fetching calendar sources', async () => {
+    const { loadCalendarTabContent } = await import('./settings-calendar.js');
+    const html = await loadCalendarTabContent({ canManageCalendar: false });
+    expect(html).toContain('id="agendaFullDayToggle"');
+    expect(html).toContain(enCatalog['settings.calendar.timeline.label']);
+    expect(html).not.toContain('id="agendaEnabledToggle"');
+    expect(html).not.toContain('id="agendaTimezoneInput"');
+    expect(html).not.toContain('id="calendarSourceAdd"');
+    expect(apiFetchMock).not.toHaveBeenCalled();
   });
 });
