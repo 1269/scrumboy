@@ -10,6 +10,7 @@ import (
 	"time"
 
 	priorityapp "scrumboy/internal/application/priority"
+	projectsettingsapp "scrumboy/internal/application/projectsettings"
 	sprintapp "scrumboy/internal/application/sprint"
 	todoapp "scrumboy/internal/application/todo"
 	todolinkapp "scrumboy/internal/application/todolink"
@@ -88,6 +89,9 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, rest []stri
 	if s.handleBoardReadEventsAndSettings(w, r, rest, &pc) {
 		return
 	}
+	if s.handleBoardCalendarRoutes(w, r, rest, &pc) {
+		return
+	}
 	if s.handleBoardWorkflowRoutes(w, r, rest, &pc) {
 		return
 	}
@@ -122,6 +126,17 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, rest []stri
 	writeError(w, http.StatusNotFound, "NOT_FOUND", "not found", nil)
 }
 
+func writeBoardSettingsPrepareError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, projectsettingsapp.ErrActorRequired):
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+	case errors.Is(err, projectsettingsapp.ErrDurableRequired):
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "not found", nil)
+	default:
+		writeStoreErr(w, err, true)
+	}
+}
+
 func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http.Request, rest []string, pc *store.ProjectContext) bool {
 	project := pc.Project
 
@@ -134,24 +149,24 @@ func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http
 	// PATCH /api/board/{slug}/settings - update board/project-level settings.
 	if len(rest) == 2 && rest[1] == "settings" && r.Method == http.MethodPatch {
 		ctx := s.requestContext(r)
-		userID, ok := store.UserIDFromContext(ctx)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
-			return true
-		}
-		if err := s.store.CheckCanManageProject(ctx, project.ID, userID); err != nil {
-			writeStoreErr(w, err, true)
+		prepared, err := s.boardSettings.Prepare(ctx, projectsettingsapp.ResolvedRESTTarget{ProjectID: project.ID})
+		if err != nil {
+			writeBoardSettingsPrepareError(w, err)
 			return true
 		}
 
 		var in struct {
-			DefaultSprintWeeks *int  `json:"defaultSprintWeeks"`
-			SprintsEnabled     *bool `json:"sprintsEnabled"`
+			DefaultSprintWeeks *int    `json:"defaultSprintWeeks"`
+			SprintsEnabled     *bool   `json:"sprintsEnabled"`
+			AgendaEnabled      *bool   `json:"agendaEnabled"`
+			AgendaTimezone     *string `json:"agendaTimezone"`
+			AgendaTitle        *string `json:"agendaTitle"`
+			AgendaColor        *string `json:"agendaColor"`
 		}
 		if err := readJSON(w, r, s.maxBody, &in); err != nil {
 			return true
 		}
-		if in.DefaultSprintWeeks == nil && in.SprintsEnabled == nil {
+		if in.DefaultSprintWeeks == nil && in.SprintsEnabled == nil && in.AgendaEnabled == nil && in.AgendaTimezone == nil && in.AgendaTitle == nil && in.AgendaColor == nil {
 			writeValidationError(w, "defaultSprintWeeks required", "default_sprint_weeks_required", map[string]any{"field": "defaultSprintWeeks"})
 			return true
 		}
@@ -159,25 +174,31 @@ func (s *Server) handleBoardReadEventsAndSettings(w http.ResponseWriter, r *http
 			writeValidationError(w, "defaultSprintWeeks must be 1 or 2", "invalid_default_sprint_weeks", map[string]any{"field": "defaultSprintWeeks"})
 			return true
 		}
-
+		view, err := prepared.Patch(projectsettingsapp.PatchCommand{
+			DefaultSprintWeeks: in.DefaultSprintWeeks,
+			SprintsEnabled:     in.SprintsEnabled,
+			AgendaEnabled:      in.AgendaEnabled,
+			AgendaTimezone:     in.AgendaTimezone,
+			AgendaTitle:        in.AgendaTitle,
+			AgendaColor:        in.AgendaColor,
+		})
+		if err != nil {
+			writeBoardSettingsPrepareError(w, err)
+			return true
+		}
 		resp := map[string]any{}
+		if in.AgendaEnabled != nil || in.AgendaTimezone != nil || in.AgendaTitle != nil || in.AgendaColor != nil {
+			resp["agendaEnabled"] = view.AgendaEnabled
+			resp["agendaTimezone"] = view.AgendaTimezone
+			resp["agendaTitle"] = view.AgendaTitle
+			resp["agendaColor"] = view.AgendaColor
+		}
 		if in.DefaultSprintWeeks != nil {
-			if project.DefaultSprintWeeks != *in.DefaultSprintWeeks {
-				if err := s.store.UpdateProjectDefaultSprintWeeks(ctx, project.ID, userID, *in.DefaultSprintWeeks); err != nil {
-					writeStoreErr(w, err, true)
-					return true
-				}
-			}
-			resp["defaultSprintWeeks"] = *in.DefaultSprintWeeks
+			resp["defaultSprintWeeks"] = view.DefaultSprintWeeks
 		}
 		if in.SprintsEnabled != nil {
-			if err := s.store.UpdateProjectSprintsEnabled(ctx, project.ID, userID, *in.SprintsEnabled); err != nil {
-				writeStoreErr(w, err, true)
-				return true
-			}
-			resp["sprintsEnabled"] = *in.SprintsEnabled
+			resp["sprintsEnabled"] = view.SprintsEnabled
 		}
-		s.emitRefreshNeeded(s.requestContext(r), project.ID, "project_settings_updated")
 		writeJSON(w, http.StatusOK, resp)
 		return true
 	}

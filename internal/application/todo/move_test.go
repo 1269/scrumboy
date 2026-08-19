@@ -3,6 +3,7 @@ package todo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"scrumboy/internal/store"
@@ -150,6 +151,26 @@ func TestMoveServiceStoreFailureAndCancellationSkipRefresh(t *testing.T) {
 				t.Fatalf("refresh calls = %d, want 0", len(refresh.calls))
 			}
 		})
+	}
+}
+
+func TestMoveServiceInvalidAgendaColumnKeyPropagatesWithoutRefresh(t *testing.T) {
+	moves := &moveStoreFake{err: fmt.Errorf("%w: invalid columnKey", store.ErrValidation)}
+	refresh := &refreshPublisherFake{}
+	prepared := NewMoveService(MoveServiceDependencies{Move: moves, Refresh: refresh}).Prepare(
+		context.Background(),
+		ResolvedMoveTarget{ProjectContext: store.ProjectContext{Project: store.Project{ID: 7}}, Mode: store.ModeFull},
+	)
+
+	_, err := prepared.Move(MoveCommand{LocalID: 1, ToColumnKey: "agenda"})
+	if !errors.Is(err, store.ErrValidation) {
+		t.Fatalf("Move error = %v, want ErrValidation", err)
+	}
+	if len(moves.calls) != 1 || moves.calls[0].toColumnKey != "agenda" {
+		t.Fatalf("move calls = %+v, want one agenda target", moves.calls)
+	}
+	if len(refresh.calls) != 0 {
+		t.Fatalf("refresh calls = %d, want 0", len(refresh.calls))
 	}
 }
 
