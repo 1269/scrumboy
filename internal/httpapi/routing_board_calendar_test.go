@@ -374,3 +374,67 @@ func TestBoardSettings_MixedInvalidTimezoneLeavesSprintWeeksUnchanged(t *testing
 		t.Fatalf("default_sprint_weeks=%d, want 2", weeks)
 	}
 }
+
+func TestRESTPatchBoardSettings_agendaTimezoneOnly(t *testing.T) {
+	ts, _, cleanup := newTestHTTPServer(t, "full")
+	defer cleanup()
+
+	client := newCookieClient(t)
+	bootstrapUserClient(t, client, ts.URL, "Owner", "tz-only@example.com", "password123")
+
+	var project struct {
+		ID   int64  `json:"id"`
+		Slug string `json:"slug"`
+	}
+	resp, body := doJSON(t, client, http.MethodPost, ts.URL+"/api/projects", map[string]any{"name": "TZ Only"}, &project)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	var listed struct {
+		AgendaEnabled  bool   `json:"agendaEnabled"`
+		AgendaTimezone string `json:"agendaTimezone"`
+	}
+	resp, body = doJSON(t, client, http.MethodGet, ts.URL+"/api/board/"+project.Slug+"/calendar-sources", nil, &listed)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", resp.StatusCode, string(body))
+	}
+	if listed.AgendaTimezone != "UTC" {
+		t.Fatalf("initial tz=%q, want UTC", listed.AgendaTimezone)
+	}
+
+	var patched map[string]any
+	resp, body = doJSON(t, client, http.MethodPatch, ts.URL+"/api/board/"+project.Slug+"/settings", map[string]any{
+		"agendaTimezone": "America/New_York",
+	}, &patched)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH status=%d body=%s", resp.StatusCode, string(body))
+	}
+	if patched["agendaTimezone"] != "America/New_York" {
+		t.Fatalf("patched agendaTimezone=%v, want America/New_York", patched["agendaTimezone"])
+	}
+
+	resp, body = doJSON(t, client, http.MethodGet, ts.URL+"/api/board/"+project.Slug+"/calendar-sources", nil, &listed)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", resp.StatusCode, string(body))
+	}
+	if listed.AgendaTimezone != "America/New_York" {
+		t.Fatalf("after PATCH GET tz=%q, want America/New_York", listed.AgendaTimezone)
+	}
+
+	resp, body = doJSON(t, client, http.MethodPatch, ts.URL+"/api/board/"+project.Slug+"/settings", map[string]any{
+		"agendaTimezone": "America/Chicago",
+	}, &patched)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH 2 status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	resp, body = doJSON(t, client, http.MethodGet, ts.URL+"/api/board/"+project.Slug+"/calendar-sources", nil, &listed)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET 2 status=%d body=%s", resp.StatusCode, string(body))
+	}
+	if listed.AgendaTimezone != "America/Chicago" {
+		t.Fatalf("after PATCH 2 GET tz=%q, want America/Chicago", listed.AgendaTimezone)
+	}
+}
+
